@@ -579,8 +579,6 @@ class POCO(_katcp.FpgaClient):
         uv['history'] = rpoco
         uv['obstype'] = 'mixed'
         uv['source'] = 'zenith'
-        uv['boffile'] = self.boffile
-        uv['bofmodel'] = rpoco
         uv['operator'] = rpoco
         uv['telescop'] = rpoco
         uv['version'] = '0.1'
