@@ -28,7 +28,7 @@ NCHAN       = 1 << 10
 SAMP_RATE   = 200e6
 POCO_BOF8   = 'rpoco8.bof'
 POCO2_BOF8  = 'rpoco8_r2.bof'
-POCO2_BOF16 = None
+POCO2_BOF16 = 'rpoco16.bof'
 POCO2_BOF32 = None
 TIME_FMT    = '%Y-%m-%d-%H:%M'
 
@@ -166,8 +166,11 @@ class POCO(_katcp.FpgaClient):
         else:
             raise ValueError('Invalid rpoco routine.')
 
+        # Update the filename to reflect the POCO version.
+        self.filename += str(self.antennas)
+
         # Raise error for not implimented yet
-        if self.model == 2:
+        if self.model == 2 and self.antennas != 16:
             raise RuntimeError('This is not implimented yet.')
 
         if self.verbose:
@@ -518,8 +521,6 @@ class POCO(_katcp.FpgaClient):
                 self.progdev(poco_bof)
             elif self.model == 2:
                 _os.system(' '.join(['adc16_init.rb', self.host, poco_bof]))
-                self.model = 1
-                print 'WARNING: Pretending that the ROACH2 is a ROACH.'
         else:
             print 'Bof process already running on FPGA.'
         if self.verbose:
@@ -578,6 +579,9 @@ class POCO(_katcp.FpgaClient):
         uv['history'] = rpoco
         uv['obstype'] = 'mixed'
         uv['source'] = 'zenith'
+        uv['roach'] = 'ROACH' + str(self.model)
+        uv['boffile'] = self.boffile
+        uv['bofmodel'] = rpoco
         uv['operator'] = rpoco
         uv['telescop'] = rpoco
         uv['version'] = '0.1'

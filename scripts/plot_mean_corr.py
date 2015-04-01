@@ -25,6 +25,49 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 
+
+def get_index(model, index):
+    antennas = int(model[5:]) # Turn this into a number
+
+    try:
+        ant_num = int(index)
+    except ValueError:
+        if len(index) == 1:
+            ant_num = ord(index) - ord('a')
+        elif len(index) == 2: # ROACH2 antenna names
+            if antennas != 16:
+                raise RuntimeError('This is not implimented yet.')
+
+            # Check if the input is valid
+            letter, number = index[0], int(index[1]) - 1
+            if number > 1 or ord(letter) < ord('a') or ord(letter) > 'h':
+                raise ValueError('Invalid antenna number')
+
+            letnum = ord(letter) - ord('a')
+            ant_num = letnum * 2 + number
+        else:
+            raise ValueError('Invalid antenna number.')
+
+    # Check that the index is valid
+    if ant_num < antennas:
+        return ant_num
+    else:
+        raise ValueError('Antenna number out of range.')
+
+def get_model(infiles):
+    """
+    This function gets the ROACH model.
+    """
+    models = list(set([aipy.miriad.UV(f)['operator'][:-1] for f in infiles]))
+    if len(models) > 1:
+        raise ValueError('Input UV files are from different ROACH models.')
+
+    model = models[0]
+    if model in ['rpoco8', 'rpoco16', 'rpoco32']:
+        return model
+    else:
+        return 'rpoco8'
+
 def print_progress(step,
                    total,
                    prog_str='Percent complete:',
@@ -56,18 +99,14 @@ if __name__ == '__main__':
     parser.add_argument('infiles', nargs='+', help='Input uv files.')
     parser.add_argument('-i',
                         dest='ant_i',
-                        type=int,
-                        choices=range(8),
                         required=True,
                         metavar='num',
-                        help='Antenna i to use (0-7).')
+                        help='Antenna i to use.')
     parser.add_argument('-j',
                         dest='ant_j',
-                        type=int,
-                        choices=range(8),
                         required=True,
                         metavar='num',
-                        help='Antenna j to use (0-7).')
+                        help='Antenna j to use.')
     parser.add_argument('-l', '--log',
                         action='store_true',
                         dest='log',
@@ -78,12 +117,13 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Get the antenna numbers
-    ant_i, ant_j = min(args.ant_i, args.ant_j), max(args.ant_i, args.ant_j)
+    model = get_model(args.infiles)
+    ant_i, ant_j = get_index(model, args.ant_i), get_index(model, args.ant_j)
+    ant_i, ant_j = min(ant_i, ant_j), max(ant_i, ant_j)
 
     # Initialize arrays to store the spectra
     spectra_r = []
     spectra_i = []
-    spectra_a = []
     last_nchan = -1
     nfiles = len(args.infiles)
 
@@ -101,7 +141,6 @@ if __name__ == '__main__':
             if i > 1:
                 spectra_r.append(np.real(data.take(range(nchan))))
                 spectra_i.append(np.imag(data.take(range(nchan))))
-                spectra_a.append(np.abs(data.take(range(nchan))))
 
         if num < nfiles - 1:
             del uv
@@ -116,7 +155,7 @@ if __name__ == '__main__':
     # Compute the means
     mean_spec_r = np.mean(spectra_r, axis=0)
     mean_spec_i = np.mean(spectra_i, axis=0)
-    mean_spec_a = np.mean(spectra_a, axis=0)
+    mean_spec_a = np.sqrt(mean_spec_r**2 + mean_spec_i**2)
 
     # Plot the spectrum
     figure_size = (15,8)
