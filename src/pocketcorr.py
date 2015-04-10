@@ -89,6 +89,19 @@ class POCO(_katcp.FpgaClient):
             raise IOError('Cannot connect to the ROACH.')
         print 'Opening FPGA client.'
 
+    def check_running(self):
+        """
+        This function checks to see if the bof process for the
+        correlator has been initialized on the ROACH. I've put a
+        constant in the design that I use to "ping" the correlator,
+        and if it can be read, this indicates that the bof process has
+        been started.
+        """
+        try:
+            return bool(self.read_int('ping'))
+        except RuntimeError:
+            return False
+
     def get_ant_ext(self, ant_num):
         """
         This function gets a string representing an antenna of a ROACH
@@ -238,6 +251,10 @@ class POCO(_katcp.FpgaClient):
         self.count = 0
         self.write_int('acc_length', self.acc_len)
 
+        # The first integration is all junk.
+        while self.count < 1:
+            self.poll()
+
     def poco_recall(self):
         """
         If the bof process is alredy running, this function retrieves
@@ -256,6 +273,7 @@ class POCO(_katcp.FpgaClient):
 
         - ``jd``: Julian date of the accumulation.
         """
+        self.count = self.read_int('acc_num')
         while self.read_int('acc_num') == self.count:
             _time.sleep(0.001)
         jd = get_jul_date(_time.time() - 0.5*self.int_time)
@@ -298,6 +316,19 @@ class POCO(_katcp.FpgaClient):
         # The data needs to be reshaped to account for the two FFT stages
         return cx_data.reshape((NCHAN, 2)).transpose()
 
+    def reconnect(self):
+        """
+        This function can be run if the correlator can't be reached
+        in the middle of data collection. This should only be run if
+        the bof process for the spectrometer has been already started.
+        """
+        while True:
+            try:
+                self.read_int('ping')
+                break
+            except:
+                _time.sleep(0.1)
+
     def retrieve_data(self):
         """
         This function retrieves data off of the ROACH and writes it to
@@ -310,13 +341,18 @@ class POCO(_katcp.FpgaClient):
             print 'RPOCO%d: Integration count: %d' % (ants, self.count)
 
             # Read and save data from all BRAM's
-            for fst, snd in zip(self.fst, self.snd):
-                corr_data = self.read_corr(fst)
-                self.uv_update(fst, corr_data[0], jd)
-                if snd[0] > snd[1]:
-                    self.uv_update(snd, _np.conj(corr_data[1]), jd)
-                else:
-                    self.uv_update(snd, corr_data[1], jd)
+            try:
+                for fst, snd in zip(self.fst, self.snd):
+                    corr_data = self.read_corr(fst)
+                    self.uv_update(fst, corr_data[0], jd)
+                    if snd[0] > snd[1]:
+                        self.uv_update(snd, _np.conj(corr_data[1]), jd)
+                    else:
+                        self.uv_update(snd, corr_data[1], jd)
+            except RuntimeError:
+                print 'WARNING: Cannot reach the ROACH. Skipping integration.'
+                self.reconnect()
+                continue
 
             # Check if there is time for more integrations
             if self.limit is not None and self.count + 1 > self.limit:
@@ -440,7 +476,10 @@ class POCO(_katcp.FpgaClient):
         if n_integ is None:
             if stop is None:
                 if interval is None:
-                    return
+                    # If we are waiting to start and there is no stop time, the
+                    # variable "stop" remains None. This is supposed to happen.
+                    if not wait:
+                        return
                 else:
                     # Convert interval to seconds
                     unit, interval = interval.split(',')
@@ -460,21 +499,32 @@ class POCO(_katcp.FpgaClient):
                     raise ValueError(' '.join(['The stopping time must occur',
                                                'after the starting time.']))
 
-            # Number of integrations is padded by an integration time on stop
-            n_integ  = int((stop - start) / self.int_time) - 1
+            # stop is None when there is a start time but no stopping limit
+            # since I didn't want to wait until the start time to check if the
+            # starting and stopping limits are valid.
+            if stop is None:
+                n_integ = None
+            else:
+                n_integ = int((stop - start) / self.int_time)
 
         # Check of the number of integrations is valid.
-        if n_integ < 1:
+        if n_integ is not None and n_integ < 1:
             raise ValueError(' '.join(['The correlator must be running for',
                                        'at least the length of one',
                                        'integration.']))
 
+        # This is meant to be done after all of the calculations in case there
+        # was a user error in setting the intervals so that it can be known as
+        # soon as possible and nobody has to wait for it.
         if wait:
             print 'Waiting until start time:', _time.ctime(start)
-            _time.sleep(start - _time.time() + self.int_time)
+            _time.sleep(start - _time.time())
 
+        # The limit variable is the last integration that can be performed
+        # before the retrieve_data function returns and exits.
         self.count = self.read_int('acc_num')
-        self.limit = self.count + n_integ
+        if n_integ is not None:
+            self.limit = self.count + n_integ
 
     def start_bof(self, acc_len, eq_coeff, fft_shift, insel, force_restart):
         """
@@ -501,13 +551,9 @@ class POCO(_katcp.FpgaClient):
         - ``prog_bof``: True if the ROACH was reprogrammed with the bof file. \
                 False if the bof file was already running.
         """
-        prog_bof = True
+        # Start the bof process if it isn't running already.
+        prog_bof = not self.check_running()
         poco_bof = self.boffile
-        try:
-            if len(filter(lambda s: 'xengine' in s, self.listdev())):
-                prog_bof = False
-        except RuntimeError:
-            pass
 
         if force_restart:
             print 'WARNING: Forcing a restart of the bof process.'
