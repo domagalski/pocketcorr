@@ -20,12 +20,31 @@
 import argparse
 import pocketcorr
 
+def get_acclen(acc_len, nspec, int_time, samp_rate=200e6):
+    """
+    This function
+    """
+    fft_size = 2048
+    default = 1 << 30
+
+    # at most, only one of these isn't None.
+    args = [acc_len, nspec, int_time]
+    if args[0] is not None:
+        return args[0]
+    elif args[1] is not None:
+        return args[1] * 2048
+    elif args[2] is not None:
+        return int(args[2] * samp_rate / fft_size) * fft_size
+    else:
+        return default
+
 if __name__ == '__main__':
     time_fmt = pocketcorr.TIME_FMT.replace('%', '%%')
 
     # Parse command-line options
     parser = argparse.ArgumentParser()
     ninteg = parser.add_mutually_exclusive_group()
+    acclen = parser.add_mutually_exclusive_group()
     parser.add_argument('-i', '--ip', dest='ip',
                         help='IP address of Pocket Correlator')
     parser.add_argument('-r', '--rpoco',
@@ -70,13 +89,11 @@ if __name__ == '__main__':
                         default=7147,
                         type=int,
                         help='Port to use with the ROACH katcp wrapper.')
-    parser.add_argument('-l', '--acc-len',
-                        dest='acc_len',
-                        type=int,
-                        default = 0x40000000,
-                        help=' '.join(['acclen. default value=0x4000000 ->',
-                                       '5.34sec. Acclen/samp_rate =',
-                                       'integration time.']))
+    parser.add_argument('-S', '--samp-rate',
+                        dest='samp_rate',
+                        default=200e6,
+                        type=float,
+                        help='The ADC sample rate that is being used.')
     parser.add_argument('-s', '--fft-shift',
                         dest='fft_shift',
                         type=int,
@@ -95,6 +112,23 @@ if __name__ == '__main__':
                                        'hex value corresponds to an input type',
                                        'on the roach. 0 = adc, 1,2 = digital',
                                        'noise, 3 = digital zero.']))
+    acclen.add_argument('-l', '--acc-len',
+                        dest='acc_len',
+                        type=int,
+                        #default = 0x40000000,
+                        help=' '.join(['acclen. default value=0x4000000 ->',
+                                       '5.34sec. Acclen/samp_rate =',
+                                       'integration time.']))
+    acclen.add_argument('-L', '--acc-spec',
+                        dest='acc_spec',
+                        type=int,
+                        #default=1<<19,
+                        help='Number of spectra per integration.')
+    acclen.add_argument('-A', '--int-time',
+                        dest='int_time',
+                        type=float,
+                        #default=(1<<30)/200e6,
+                        help='Accumulation time in seconds.')
     parser.add_argument('-v', '--verbose',
                         action='store_true',
                         help='Enable verbose mode.')
@@ -110,10 +144,13 @@ if __name__ == '__main__':
     calfile       = args.calfile
     nyquist       = args.nyquist
     acc_len       = args.acc_len
+    acc_spec      = args.acc_spec
     eq_coeff      = args.eq_coeff
     filename      = args.filename
     interval      = args.interval
+    int_time      = args.int_time
     fft_shift     = args.fft_shift
+    samp_rate     = args.samp_rate
     insel         = args.insel
     keep_running  = args.keep_running
     force_restart = args.force_restart
@@ -123,10 +160,11 @@ if __name__ == '__main__':
     roach.check_connected()
     roach.set_verbose(verbose)
     roach.get_model(rpoco)
-    roach.set_attributes(calfile, nyquist)
+    roach.set_attributes(calfile, samp_rate, nyquist)
     if filename is not None:
         roach.set_filename(filename)
 
+    acc_len = get_acclen(acc_len, acc_spec, int_time, samp_rate)
     if roach.start_bof(acc_len, eq_coeff, fft_shift, insel, force_restart):
         roach.poco_init()
     else:

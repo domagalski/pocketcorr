@@ -25,7 +25,7 @@ from corr import katcp_wrapper as _katcp
 
 BRAM_SIZE   = 4 << 11
 NCHAN       = 1 << 10
-SAMP_RATE   = 200e6
+SAMP_RATE   = None #200e6
 POCO_BOF8   = 'rpoco8.bof'
 POCO2_BOF8  = 'rpoco8_r2.bof'
 POCO2_BOF16 = 'rpoco16.bof'
@@ -68,7 +68,9 @@ class POCO(_katcp.FpgaClient):
         self.filename = 'poco'
 
         # Set some null values for FPGA parameters.
+        self.samp_rate = None
         self.acc_len   = None
+        self.int_time  = None
         self.eq_coeff  = None
         self.fft_shift = None
         self.insel     = None
@@ -251,6 +253,7 @@ class POCO(_katcp.FpgaClient):
         print 'Starting the correlator.'
         self.count = 0
         self.write_int('acc_length', self.acc_len)
+        print 'Integration time:', self.int_time, 's'
 
         # The first integration is all junk.
         while self.count < 1:
@@ -368,7 +371,7 @@ class POCO(_katcp.FpgaClient):
                 print 'Reopening a new UV file.'
                 self.uv_open()
 
-    def set_attributes(self, calfile, nyquist_zone, bandpass=None):
+    def set_attributes(self, calfile, samp_rate, nyquist_zone, bandpass=None):
         """
         This function sets certain attributes of the observation being
         made, such as which antenna calibration file to use and which
@@ -392,7 +395,7 @@ class POCO(_katcp.FpgaClient):
 
         # Use the nyquiqt zone to determine frequency information that will be
         # written to the miriad file. Frequencies are in GHz (not sure why...)
-        nyquist_ghz = SAMP_RATE / 2 / 1e9
+        nyquist_ghz = samp_rate / 2 / 1e9
         sdf = nyquist_ghz / NCHAN
         if nyquist_zone % 2:
             sfreq = (nyquist_zone - 1) * nyquist_ghz
@@ -407,7 +410,7 @@ class POCO(_katcp.FpgaClient):
         self.sfreq = sfreq
         self.nchan = NCHAN
         self.bandpass = bandpass
-        self.samp_rate = SAMP_RATE
+        self.samp_rate = samp_rate
         self.nyquist = nyquist_zone
 
     def set_filename(self, filename):
@@ -579,7 +582,7 @@ class POCO(_katcp.FpgaClient):
         self.eq_coeff  = eq_coeff
         self.fft_shift = fft_shift
         self.insel     = insel
-        self.int_time  = self.acc_len / SAMP_RATE
+        self.int_time  = self.acc_len / self.samp_rate
 
         # Write FPGA parameters to the ROACH
         if prog_bof:
@@ -642,7 +645,7 @@ class POCO(_katcp.FpgaClient):
         uv['sfreq'] = uv['freq'] = uv['restfreq'] = self.sfreq
         uv['sdf'] = self.sdf
         uv['nchan'] = uv['nschan'] = self.nchan
-        uv['inttime'] = self.acc_len/self.samp_rate
+        uv['inttime'] = self.int_time
 
         if self.bandpass is None:
             self.bandpass = _np.ones(BRAM_SIZE, dtype=_np.complex)
