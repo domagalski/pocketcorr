@@ -185,8 +185,7 @@ class POCO(_katcp.FpgaClient):
         self.filename += str(self.antennas)
 
         # Raise error for not implimented yet
-        if self.model == 2: # and self.antennas != 16:
-            # XXX there are timing errors in the current rpoco16 model
+        if self.model == 2 and self.antennas != 16:
             raise RuntimeError('This is not implimented yet.')
 
         if self.verbose:
