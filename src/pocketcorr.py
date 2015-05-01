@@ -18,6 +18,7 @@
 ################################################################################
 
 import os         as _os
+import sys        as _sys
 import aipy       as _aipy
 import time       as _time
 import numpy      as _np
@@ -688,6 +689,45 @@ class POCO(_katcp.FpgaClient):
         # Write to the UV file (what a helpful comment right there...)
         self.uv.write(preamble, data, flags=flags)
 
+def get_ant_index(model, index):
+    """
+    This function returns the numerical index of an antenna based on
+    the label on the xengine BRAM block or the label on the ROACH2 ADC.
+
+    Input:
+
+    - ``model``: The pocket correlator (rpoco8, rpoco16, rpoco24...).
+    - ``index``: The label of the channel.
+    """
+    if model not in ['rpoco8', 'rpoco16', 'rpoco24', 'rpoco32']:
+        raise ValueError('Invalid input.')
+    antennas = int(model[5:]) # Turn this into a number
+
+    try:
+        ant_num = int(index)
+    except ValueError:
+        if len(index) == 1:
+            ant_num = ord(index) - ord('a')
+        elif len(index) == 2: # ROACH2 antenna names
+            if antennas != 16:
+                raise RuntimeError('This is not implimented yet.')
+
+            # Check if the input is valid
+            letter, number = index[0], int(index[1]) - 1
+            if number > 1 or ord(letter) < ord('a') or ord(letter) > 'h':
+                raise ValueError('Invalid antenna number')
+
+            letnum = ord(letter) - ord('a')
+            ant_num = letnum * 2 + number
+        else:
+            raise ValueError('Invalid antenna number.')
+
+    # Check that the index is valid
+    if ant_num < antennas:
+        return ant_num
+    else:
+        raise ValueError('Antenna number out of range.')
+
 def get_jul_date(unixtime=None):
     """
     This function computes the Julian date based on unix time.
@@ -704,6 +744,24 @@ def get_jul_date(unixtime=None):
     if unixtime is None:
         unixtime = _time.time()
     return unixtime / 86400.0 + 2440587.5
+
+def get_model_uv(infiles):
+    """
+    This function gets the poco model from UV files.
+
+    Input:
+
+    - ``infiles``: The UV files to use to detect the poco model.
+    """
+    models = list(set([_aipy.miriad.UV(f)['operator'][:-1] for f in infiles]))
+    if len(models) > 1:
+        raise ValueError('Input UV files are from different ROACH models.')
+
+    model = models[0]
+    if model in ['rpoco8', 'rpoco16', 'rpoco32']:
+        return model
+    else:
+        return 'rpoco8'
 
 def get_seconds(date=None, fmt=TIME_FMT):
     """
@@ -723,3 +781,68 @@ def get_seconds(date=None, fmt=TIME_FMT):
         return _time.time()
     else:
         return _time.mktime(_time.strptime(date, fmt))
+
+def spec_list(infiles, ant_i, ant_j, verbose=False):
+    # Initialize arrays to store the spectra
+    spectra_r = []
+    spectra_i = []
+    last_nchan = -1
+    nfiles = len(infiles)
+
+    # Read spectra from the UV files into numpy arrays
+    for num, infile in enumerate(map(_os.path.abspath, infiles)):
+        uv = _aipy.miriad.UV(infile)
+        uv.select('antennae', ant_i, ant_j)
+        nchan = uv['nchan']
+        if last_nchan > 0  and nchan != last_nchan:
+            raise ValueError('Number of channels do not match across inputs.')
+        last_nchan = nchan
+
+        # Get all of the spectra
+        for i, (preamble, data) in enumerate(uv.all()):
+            if i > 1:
+                spectra_r.append(_np.real(data.take(range(nchan))))
+                spectra_i.append(_np.imag(data.take(range(nchan))))
+
+        if num < nfiles - 1:
+            del uv
+
+        # Display a cute progress meter.
+        if nfiles > 1 and verbose:
+            print_progress(num, nfiles)
+
+    return (spectra_r, spectra_i)
+
+
+def print_progress(step,
+                   total,
+                   prog_str='Percent complete:',
+                   quiet=False,
+                   progfile='progress'):
+    """
+    Print the progress of some iteration through data. The step is the
+    current i for i in range(total). This function can also display
+    progress quietly by writing it to a file.
+
+    Input:
+
+    - ``step``: The iteration, starting at 0, of progress.
+    - ``total``: Total number of iterations completed.
+    - ``prog_str``: Message to print with the progress number.
+    - ``quiet``: Setting this to true saves the progress to a file.
+    - ``progfile``: The file to save progress to when in quiet mode.
+    """
+    progress = round(100 * float(step+1) / total, 2)
+    progress = '\r' + prog_str + ' ' + str(progress) + '%\t\t'
+    if quiet:
+        if step + 1 == total:
+            _os.system('rm -f ' + progfile)
+        else:
+            with open(progfile, 'w') as f:
+                f.write(progress[1:-2] + '\n')
+    else:
+        print progress,
+        if step == total - 1:
+            print
+        else:
+            _sys.stdout.flush()
