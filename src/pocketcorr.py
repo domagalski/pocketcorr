@@ -186,7 +186,7 @@ class POCO(_katcp.FpgaClient):
         self.filename += str(self.antennas)
 
         # Raise error for not implimented yet
-        if self.model == 2 and self.antennas != 16:
+        if self.model == 2 and self.antennas > 16:
             raise RuntimeError('This is not implimented yet.')
 
         if self.verbose:
@@ -709,16 +709,24 @@ def get_ant_index(model, index):
         if len(index) == 1:
             ant_num = ord(index) - ord('a')
         elif len(index) == 2: # ROACH2 antenna names
-            if antennas != 16:
+            if antennas > 16:
                 raise RuntimeError('This is not implimented yet.')
 
-            # Check if the input is valid
             letter, number = index[0], int(index[1]) - 1
-            if number > 1 or ord(letter) < ord('a') or ord(letter) > 'h':
-                raise ValueError('Invalid antenna number')
+            if number < 0 or number > 3:
+                raise ValueError('Invalid antenna number.')
+            if antennas == 8:
+                if letter != 'a' and letter != 'b':
+                    raise ValueError('Invalid antenna number.')
+                letnum = ord(letter) - ord('a')
+                ant_num = letnum * 4 + number
+            elif antennas == 16:
+                # Check if the input is valid
+                if number > 1 or ord(letter) < ord('a') or ord(letter) > 'h':
+                    raise ValueError('Invalid antenna number.')
 
-            letnum = ord(letter) - ord('a')
-            ant_num = letnum * 2 + number
+                letnum = ord(letter) - ord('a')
+                ant_num = letnum * 2 + number
         else:
             raise ValueError('Invalid antenna number.')
 
@@ -800,9 +808,8 @@ def spec_list(infiles, ant_i, ant_j, verbose=False):
 
         # Get all of the spectra
         for i, (preamble, data) in enumerate(uv.all()):
-            if i > 1:
-                spectra_r.append(_np.real(data.take(range(nchan))))
-                spectra_i.append(_np.imag(data.take(range(nchan))))
+            spectra_r.append(_np.real(data.take(range(nchan))))
+            spectra_i.append(_np.imag(data.take(range(nchan))))
 
         if num < nfiles - 1:
             del uv
