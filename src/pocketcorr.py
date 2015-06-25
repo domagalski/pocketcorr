@@ -75,7 +75,7 @@ class POCO(_katcp.FpgaClient):
         self.eq_coeff  = None
         self.fft_shift = None
         self.insel     = None
-        self.sync_sel  = None
+        self.sync_sel  = True
 
     def check_connected(self, timeout=10):
         """
@@ -219,7 +219,7 @@ class POCO(_katcp.FpgaClient):
 
         return (fst, snd)
 
-    def poco_init(self, sync_sel=True):
+    def poco_init(self):
         """
         This function performs some initial procedures for the pocket
         correlator, setting the equalization coefficients and the sync.
@@ -242,7 +242,9 @@ class POCO(_katcp.FpgaClient):
                 self.write_int('eq_coeff', eq_coeff)
 
         # Sync selection
-        self.sync_sel = sync_sel
+        # TODO completely remove the sync_sel register from all designs. This
+        # design does not need an external sync...
+        self.sync_sel = True
         self.write_int('Sync_sync_sel', self.sync_sel)
         if self.sync_sel:
             for i in (0, 1, 0):
