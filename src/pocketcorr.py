@@ -269,6 +269,11 @@ class POCO(_katcp.FpgaClient):
         """
         self.sync_sel = self.read_int('Sync_sync_sel')
         self.count = self.read_int('acc_num')
+        self.acc_len = self.read_int('acc_length')
+        self.eq_coeff = self.read_int('eq_coeff')
+        self.fft_shift = self.read_int('ctrl_sw')
+        self.insel = self.read_int('insel_insel_data')
+        self.int_time  = self.acc_len / self.samp_rate
 
     def poll(self):
         """
@@ -579,16 +584,14 @@ class POCO(_katcp.FpgaClient):
             print 'bof process:', poco_bof
             print
 
-        # Save some FPGA parameters.
-        self.acc_len   = acc_len
-        self.eq_coeff  = eq_coeff
-        self.fft_shift = fft_shift
-        self.insel     = insel
-        self.int_time  = self.acc_len / self.samp_rate
-
-        # Write FPGA parameters to the ROACH
+        # Write FPGA parameters to the ROACH and save them.
         if prog_bof:
             print 'Configuring pocket correlator.'
+            self.acc_len   = acc_len
+            self.eq_coeff  = eq_coeff
+            self.fft_shift = fft_shift
+            self.insel     = insel
+            self.int_time  = self.acc_len / self.samp_rate
             if self.verbose:
                 print '%-20s:\t%d' % ('acc_length', self.acc_len)
                 print '%-20s:\t%d' % ('eq_coeff', self.eq_coeff)
