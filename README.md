@@ -1,7 +1,7 @@
 PocketCorr 
 ===========================================================
 
-KATCP-based pocket correlator for ROACH boards.
+This is a KATCP-based pocket correlator for single ROACH boards.
 
 Documentation
 -------------
