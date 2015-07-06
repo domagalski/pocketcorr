@@ -340,13 +340,15 @@ class POCO(_katcp.FpgaClient):
             except:
                 _time.sleep(0.1)
 
-    def retrieve_data(self):
+    def retrieve_data(self, antenna_list=None):
         """
         This function retrieves data off of the ROACH and writes it to
         uv files.
         """
         ants  = self.antennas
         start = self.count
+        if antenna_list == None:
+            antenna_list = range(ants)
         while True:
             jd = self.poll()
             print 'RPOCO%d: Integration count: %d' % (ants, self.count)
@@ -355,11 +357,13 @@ class POCO(_katcp.FpgaClient):
             try:
                 for fst, snd in zip(self.fst, self.snd):
                     corr_data = self.read_corr(fst)
-                    self.uv_update(fst, corr_data[0], jd)
-                    if snd[0] > snd[1]:
-                        self.uv_update(snd, _np.conj(corr_data[1]), jd)
-                    else:
-                        self.uv_update(snd, corr_data[1], jd)
+                    if fst[0] in antenna_list and fst[1] in antenna_list:
+                        self.uv_update(fst, corr_data[0], jd)
+                    if snd[0] in antenna_list and snd[1] in antenna_list:
+                        if snd[0] > snd[1]:
+                            self.uv_update(snd, _np.conj(corr_data[1]), jd)
+                        else:
+                            self.uv_update(snd, corr_data[1], jd)
             except RuntimeError:
                 print 'WARNING: Cannot reach the ROACH. Skipping integration.'
                 self.reconnect()

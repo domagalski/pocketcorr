@@ -51,6 +51,8 @@ if __name__ == '__main__':
                         required=True,
                         help=' '.join(['Pocket correlator model (rpoco8,',
                                        'rpoco8_r2, rpoco16, rpoco32)']))
+    parser.add_argument('-C', '--channels',
+                        help='Comma separated list of antennas to get data from.')
     parser.add_argument('-F', '--filename',
                         help='Filename base of the output UV files.')
     parser.add_argument('-t', '--start-time',
@@ -174,7 +176,11 @@ if __name__ == '__main__':
     try:
         roach.scheduler(n_integ, start, stop, interval)
         roach.uv_open()
-        roach.retrieve_data()
+        if args.channels is None:
+            roach.retrieve_data()
+        else:
+            channels = map(int, args.channels.split(','))
+            roach.retrieve_data(channels)
     except KeyboardInterrupt:
         print
         roach.uv_close()

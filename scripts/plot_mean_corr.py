@@ -50,6 +50,10 @@ if __name__ == '__main__':
     parser.add_argument('-q', '--quiet',
                         action='store_true',
                         help='Suppress messages to stdout.')
+    parser.add_argument('-s', '--scale',
+                        action='store_true',
+                        help=' '.join(['Scale the output by number of spectra',
+                                       'per integration.']))
     args = parser.parse_args()
 
     # Get the antenna numbers
@@ -64,12 +68,35 @@ if __name__ == '__main__':
     # Get the frequency bins of the data
     uv = aipy.miriad.UV(args.infiles[0])
     frequency = 1e3 * aipy.cal.get_freqs(uv['sdf'], uv['sfreq'], uv['nchan'])
-    del uv
 
     # Compute the means
     mean_spec_r = np.mean(spectra_r, axis=0)
     mean_spec_i = np.mean(spectra_i, axis=0)
+    if args.scale:
+        fft_size = 2*uv['nchan']
+        if 'acclen' in uv.vars():
+            scale_factor = uv['acclen'] / fft_size
+        else:
+            # Estimate the clocks per accumulation using the integration time.
+            sfreq = uv['sfreq'] and uv['sfreq'] or 0.2 # XXX default value
+            acclen = int(sfreq * 1e9 * uv['inttime'])
+            upper = lower = acclen
+            delta = 1
+            while acclen % fft_size:
+                upper = acclen + delta
+                lower = acclen - delta
+                if not upper % fft_size:
+                    acclen = upper
+                elif not lower % fft_size:
+                    acclen = lower
+                delta += 1
+            scale_factor = acclen / fft_size
+        mean_spec_r /= scale_factor
+        mean_spec_i /= scale_factor
     mean_spec_a = np.sqrt(mean_spec_r**2 + mean_spec_i**2)
+
+    # The reference UV file is no longer needed.
+    del uv
 
     # Plot the spectrum
     figure_size = (15,8)
