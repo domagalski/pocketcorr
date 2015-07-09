@@ -98,12 +98,14 @@ class POCO(_katcp.FpgaClient):
         correlator has been initialized on the ROACH. I've put a
         constant in the design that I use to "ping" the correlator,
         and if it can be read, this indicates that the bof process has
-        been started.
+        been started. The correlator hasn't been configured if acc_num
+        is at zero. It's possible for the correlator to be running, but
+        not configured yet.
         """
         try:
-            return bool(self.read_int('ping'))
+            return bool(self.read_int('ping')), self.read_int('acc_num') > 1
         except RuntimeError:
-            return False
+            return False, False
 
     def get_ant_ext(self, ant_num):
         """
@@ -567,7 +569,7 @@ class POCO(_katcp.FpgaClient):
                 False if the bof file was already running.
         """
         # Start the bof process if it isn't running already.
-        prog_bof = not self.check_running()
+        prog_bof, configure = [not b for b in self.check_running()]
         poco_bof = self.boffile
 
         if force_restart:
@@ -589,7 +591,7 @@ class POCO(_katcp.FpgaClient):
             print
 
         # Write FPGA parameters to the ROACH and save them.
-        if prog_bof:
+        if prog_bof or configure:
             print 'Configuring pocket correlator.'
             self.acc_len   = acc_len
             self.eq_coeff  = eq_coeff
@@ -606,8 +608,8 @@ class POCO(_katcp.FpgaClient):
             self.write_int('ctrl_sw',          self.fft_shift)
             self.write_int('insel_insel_data', self.insel)
 
-        # Return whether the bof file was started.
-        return prog_bof
+        # Return whether the bof file was started or configured
+        return prog_bof or configure
 
     def uv_close(self):
         """
