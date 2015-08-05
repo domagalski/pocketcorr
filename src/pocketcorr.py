@@ -2,7 +2,7 @@
 
 ################################################################################
 ## This module defines a class for interfacing with a ROACH pocket correlator.
-## Copyright (C) 2014  Rachel Domagalski: idomagalski@berkeley.edu
+## Copyright (C) 2014  Rachel Domagalski: rsdomagalski@gmail.com
 ##
 ## This program is free software: you can redistribute it and/or modify
 ## it under the terms of the GNU General Public License as published by
@@ -26,11 +26,9 @@ from corr import katcp_wrapper as _katcp
 
 BRAM_SIZE   = 4 << 11
 NCHAN       = 1 << 10
-SAMP_RATE   = None #200e6
 POCO_BOF8   = 'rpoco8.bof'
 POCO2_BOF8  = 'rpoco8_r2.bof'
 POCO2_BOF16 = 'rpoco16.bof'
-POCO2_BOF32 = None
 TIME_FMT    = '%Y-%m-%d-%H:%M'
 
 EQ_ADDR_RANGE = 1 << 6
@@ -92,6 +90,22 @@ class POCO(_katcp.FpgaClient):
             raise IOError('Cannot connect to the ROACH.')
         print 'Opening FPGA client.'
 
+    def check_corr(self, pair, antenna_list=None):
+        """
+        This function checks if both antennas in a correlation pair are
+        in an antenna list. If ``antenna_list`` is None, then it is
+        assumed that any antenna pair is automatically valid.
+
+        Input:
+
+        - ``pair``: Pair of antennas for a baseline.
+        - ``antenna_list``: List of valid antennas.
+        """
+        if antenna_list is None:
+            return True
+        else:
+            return pair[0] in antenna_list and pair[1] in antenna_list
+
     def check_running(self):
         """
         This function checks to see if the bof process for the
@@ -127,6 +141,37 @@ class POCO(_katcp.FpgaClient):
         else:
             ext = chr(ord('a') + ant_num)
         return ext
+
+    def get_ant_ind(self, ant_name):
+        """
+        This function maps ROACH2 channel names to antenna indices.
+
+        Input:
+
+        - ``ant_name``: Name of ROACH2 channel.
+        """
+        demux = 4 * self.antennas / 32 # XXX I'm probably not doing rpoco24
+
+        # Get the number associated with the letter.
+        letter = ord(ant_name[0])
+        if letter >= ord('A') and letter <= ord('H'):
+            letter -= ord('A')
+        elif letter >= ord('a') and letter <= ord('h'):
+            letter -= ord('a')
+        else:
+            raise ValueError('Invalid antenna name.')
+
+        # Get the number withing the letter channel.
+        try:
+            number = int(ant_name[1]) - 1
+        except IndexError:
+            number = 0
+        if number not in range(demux):
+            raise ValueError('Inactive channel.')
+
+        # return the antenna index.
+        return letter * demux + number
+
 
     def get_corr_name(self, corr_pair):
         """
@@ -177,10 +222,6 @@ class POCO(_katcp.FpgaClient):
             self.model = 2
             self.antennas = 16
             self.boffile = POCO2_BOF16
-        elif rpoco == 'rpoco32':
-            self.model = 2
-            self.antennas = 32
-            self.boffile = POCO2_BOF32
         else:
             raise ValueError('Invalid rpoco routine.')
 
@@ -349,8 +390,8 @@ class POCO(_katcp.FpgaClient):
         """
         ants  = self.antennas
         start = self.count
-        if antenna_list == None:
-            antenna_list = range(ants)
+        if antenna_list is not None and self.model == 2:
+            antenna_list = map(self.get_ant_ind, antenna_list)
         while True:
             jd = self.poll()
             print 'RPOCO%d: Integration count: %d' % (ants, self.count)
@@ -358,10 +399,13 @@ class POCO(_katcp.FpgaClient):
             # Read and save data from all BRAM's
             try:
                 for fst, snd in zip(self.fst, self.snd):
-                    corr_data = self.read_corr(fst)
-                    if fst[0] in antenna_list and fst[1] in antenna_list:
+                    fst_in_list = self.check_corr(fst, antenna_list)
+                    snd_in_list = self.check_corr(snd, antenna_list)
+                    if fst_in_list or snd_in_list:
+                        corr_data = self.read_corr(fst)
+                    if fst_in_list:
                         self.uv_update(fst, corr_data[0], jd)
-                    if snd[0] in antenna_list and snd[1] in antenna_list:
+                    if snd_in_list:
                         if snd[0] > snd[1]:
                             self.uv_update(snd, _np.conj(corr_data[1]), jd)
                         else:
@@ -727,10 +771,10 @@ def get_ant_index(model, index):
             if number < 0 or number > 3:
                 raise ValueError('Invalid antenna number.')
             if antennas == 8:
-                if letter != 'a' and letter != 'b':
+                # Check if the input is valid
+                if number or ord(letter) < ord('a') or ord(letter) > 'h':
                     raise ValueError('Invalid antenna number.')
-                letnum = ord(letter) - ord('a')
-                ant_num = letnum * 4 + number
+                ant_num = ord(letter) - ord('a')
             elif antennas == 16:
                 # Check if the input is valid
                 if number > 1 or ord(letter) < ord('a') or ord(letter) > 'h':
