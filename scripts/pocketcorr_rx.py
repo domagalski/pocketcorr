@@ -2,7 +2,7 @@
 
 ################################################################################
 ## This script is for recieving data from a pocket correlator.
-## Copyright (C) 2014  Rachel Domagalski: idomagalski@berkeley.edu
+## Copyright (C) 2014  Rachel Domagalski: rsdomagalski@gmail.com
 ##
 ## This program is free software: you can redistribute it and/or modify
 ## it under the terms of the GNU General Public License as published by
@@ -50,7 +50,7 @@ if __name__ == '__main__':
     parser.add_argument('-r', '--rpoco',
                         required=True,
                         help=' '.join(['Pocket correlator model (rpoco8,',
-                                       'rpoco8_r2, rpoco16, rpoco32)']))
+                                       'rpoco8_r2, rpoco16)']))
     parser.add_argument('-C', '--channels',
                         help='Comma separated list of antennas to get data from.')
     parser.add_argument('-F', '--filename',
@@ -179,7 +179,9 @@ if __name__ == '__main__':
         if args.channels is None:
             roach.retrieve_data()
         else:
-            channels = map(int, args.channels.split(','))
+            channels = args.channels.split(',')
+            if roach.model == 1:
+                channels = map(int, channels)
             roach.retrieve_data(channels)
     except KeyboardInterrupt:
         print

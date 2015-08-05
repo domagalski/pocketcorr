@@ -4,7 +4,7 @@ PocketCorr: KATCP-based pocket correlator for ROACH boards.
 from distutils.core import setup
 import glob
 
-__version__ = '0.6.8'
+__version__ = '1.0.0'
 
 if __name__ == '__main__':
     setup(name = 'pocketcorr',
@@ -13,7 +13,7 @@ if __name__ == '__main__':
         long_description = __doc__,
         license = 'GPL',
         author = 'Rachel Domagalski',
-        author_email = 'idomagalski@berkeley.edu',
+        author_email = 'rsdomagalski@gmail.com',
         url = 'https://github.com/domagalski/pocketcorr',
         package_dir = {'':'src'},
         py_modules = ['pocketcorr'],
