@@ -26,9 +26,11 @@ from corr import katcp_wrapper as _katcp
 
 BRAM_SIZE   = 4 << 11
 NCHAN       = 1 << 10
-POCO_BOF8   = 'rpoco8.bof'
-POCO2_BOF8  = 'rpoco8_r2.bof'
-POCO2_BOF16 = 'rpoco16.bof'
+POCO_BOF8   = 'rpoco8_100.bof'
+POCO2_BOF8  = 'rpoco8_100_r2.bof'
+POCO2_BOF16 = 'rpoco16_100.bof'
+SNAP_BOF12  = 'spoco12_100.bof'
+SNAP_BOF6   = 'spoco6_250.bof'
 TIME_FMT    = '%Y-%m-%d-%H:%M'
 
 EQ_ADDR_RANGE = 1 << 6
