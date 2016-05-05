@@ -2,7 +2,7 @@
 
 ################################################################################
 ## This script is for getting the mean cross correlation out of poco data.
-## Copyright (C) 2014  Rachel Domagalski: rsdomagalski@gmail.com
+## Copyright (C) 2014  Rachel Simone Domagalski: domagalski@berkeley.edu
 ##
 ## This program is free software: you can redistribute it and/or modify
 ## it under the terms of the GNU General Public License as published by

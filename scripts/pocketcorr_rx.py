@@ -2,7 +2,7 @@
 
 ################################################################################
 ## This script is for recieving data from a pocket correlator.
-## Copyright (C) 2014  Rachel Domagalski: rsdomagalski@gmail.com
+## Copyright (C) 2014  Rachel Simone Domagalski: domagalski@berkeley.edu
 ##
 ## This program is free software: you can redistribute it and/or modify
 ## it under the terms of the GNU General Public License as published by
@@ -45,7 +45,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     ninteg = parser.add_mutually_exclusive_group()
     acclen = parser.add_mutually_exclusive_group()
-    parser.add_argument('-i', '--ip', dest='ip',
+    parser.add_argument('-i', '--ip', dest='ip', required=True,
                         help='IP address of Pocket Correlator')
     parser.add_argument('-r', '--rpoco',
                         required=True,
@@ -158,7 +158,10 @@ if __name__ == '__main__':
     force_restart = args.force_restart
 
     # Start up the ROACH board
-    roach = pocketcorr.POCO(ip, port)
+    if pocketcorr.is_demux2(rpoco):
+        roach = pocketcorr.POCOdemux2(ip, port)
+    else:
+        roach = pocketcorr.POCO(ip, port)
     roach.check_connected()
     roach.set_verbose(verbose)
     roach.get_model(rpoco)

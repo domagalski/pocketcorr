@@ -2,7 +2,7 @@
 
 ################################################################################
 ## This module defines a class for interfacing with a ROACH pocket correlator.
-## Copyright (C) 2014  Rachel Domagalski: rsdomagalski@gmail.com
+## Copyright (C) 2014  Rachel Simone Domagalski: domagalski@berkeley.edu
 ##
 ## This program is free software: you can redistribute it and/or modify
 ## it under the terms of the GNU General Public License as published by
@@ -24,8 +24,6 @@ import time       as _time
 import numpy      as _np
 from corr import katcp_wrapper as _katcp
 
-BRAM_SIZE   = 4 << 11
-NCHAN       = 1 << 10
 POCO_BOF8   = 'rpoco8_100.bof'
 POCO2_BOF8  = 'rpoco8_100_r2.bof'
 POCO2_BOF16 = 'rpoco16_100.bof'
@@ -63,6 +61,7 @@ class POCO(_katcp.FpgaClient):
         # Default values for ROACH model
         self.model = None
         self.antennas = None
+        self.nchan = None
 
         # Display options
         self.verbose = False
@@ -146,19 +145,27 @@ class POCO(_katcp.FpgaClient):
 
     def get_ant_ind(self, ant_name):
         """
-        This function maps ROACH2 channel names to antenna indices.
+        This function maps ROACH2/SNAP channel names to antenna indices.
 
         Input:
 
         - ``ant_name``: Name of ROACH2 channel.
         """
-        demux = 4 * self.antennas / 32 # XXX I'm probably not doing rpoco24
+        snap_board = self.antennas % 6 == 0
+        if snap_board:
+            demux = 4 * self.antennas / 12
+        else:
+            demux = 4 * self.antennas / 32 # XXX I'm probably not doing rpoco24
 
         # Get the number associated with the letter.
         letter = ord(ant_name[0])
-        if letter >= ord('A') and letter <= ord('H'):
+        if snap_board and letter >= ord('A') and letter <= ord('C'):
             letter -= ord('A')
-        elif letter >= ord('a') and letter <= ord('h'):
+        elif snap_board and letter >= ord('a') and letter <= ord('c'):
+            letter -= ord('a')
+        elif not snap_board and letter >= ord('A') and letter <= ord('H'):
+            letter -= ord('A')
+        elif not snap_board and letter >= ord('a') and letter <= ord('h'):
             letter -= ord('a')
         else:
             raise ValueError('Invalid antenna name.')
@@ -173,7 +180,6 @@ class POCO(_katcp.FpgaClient):
 
         # return the antenna index.
         return letter * demux + number
-
 
     def get_corr_name(self, corr_pair):
         """
@@ -196,7 +202,7 @@ class POCO(_katcp.FpgaClient):
             sep = ''
         return sep.join(map(self.get_ant_ext, sorted(corr_pair)))
 
-    def get_model(self, rpoco):
+    def get_model(self, poco):
         """
         This function determines which ROACH type is being used and
         sets the appropriate class data members (model, antennas,
@@ -211,31 +217,57 @@ class POCO(_katcp.FpgaClient):
             print 'Detecting ROACH model.\n'
 
         # Get the antenna info from the pocketcorr design
-        rpoco = rpoco.lower()
-        if rpoco == 'rpoco8':
+        powchan = 10
+        poco = poco.lower()
+        if poco == 'rpoco8':
             self.model = 1
             self.antennas = 8
             self.boffile = POCO_BOF8
-        elif rpoco == 'rpoco8_r2':
+        elif poco == 'rpoco8_r2':
             self.model = 2
             self.antennas = 8
             self.boffile = POCO2_BOF8
-        elif rpoco == 'rpoco16':
+        elif poco == 'rpoco16':
             self.model = 2
             self.antennas = 16
             self.boffile = POCO2_BOF16
+        elif poco == 'spoco6':
+            self.model = 2 # Pretending the SNAP board is like a ROACH2
+            self.antennas = 6
+            #self.bram_size = 4 << 11
+            #self.nchan = 1 << 11
+            self.boffile = SNAP_BOF6
+        elif poco == 'spoco12':
+            powchan = 9
+            self.model = 2 # Pretending the SNAP board is like a ROACH2
+            self.antennas = 12
+            self.boffile = SNAP_BOF12
         else:
-            raise ValueError('Invalid rpoco routine.')
+            raise ValueError('Invalid poco routine.')
+
+        # Set the bram size and number of channels
+        self.bram_size = 4 << (powchan + 1 - is_demux2(poco))
+        self.nchan = 1 << powchan
 
         # Update the filename to reflect the POCO version.
         self.filename += str(self.antennas)
+
+        # Get the cross-multiplications XXX snap6 friendlines needed.
+        if is_demux2(poco):
+            self.pairs = self.get_xmult()
+        else:
+            self.fst, self.snd = self.get_xmult()
 
         # Raise error for not implimented yet
         if self.model == 2 and self.antennas > 16:
             raise RuntimeError('This is not implimented yet.')
 
         if self.verbose:
-            print 'Detected ROACH' + (self.model == 2 and '2' or ''),
+            print 'Detected',
+            if 'rpoco' in poco:
+                print 'ROACH' + (self.model == 2 and '2' or ''),
+            else:
+                print 'SNAP',
             print 'board with', self.antennas, 'ADC inputs.\n'
 
     def get_xmult(self):
@@ -276,15 +308,31 @@ class POCO(_katcp.FpgaClient):
         """
         # Set the eq_coeff parameter.
         # 0-16 coeff, 17 coeff-en, 20-25 coeff-addr, 30-31 ant-pair-sel
-        for ant_sel in range(self.antennas/2):
-            for addr in range(EQ_ADDR_RANGE):
-                if self.verbose:
-                    items = (ant_sel, addr, self.eq_coeff)
-                    print 'RPOCO%d:' % self.antennas,
-                    print 'ant_sel=%d, addr=%2d, eq_coeff=%d' % items
-                eq_coeff  = (self.eq_coeff) + (1 << 17)
-                eq_coeff += (addr << 20) + (ant_sel << 28)
-                self.write_int('eq_coeff', eq_coeff)
+        snap12 = True
+        if snap12: # XXX impliment this system for all correlators.
+            size = self.antennas / 2
+            eq_coeff = int(self.eq_coeff) # Test to see if scalar
+            shape = (size, 2*self.nchan)
+            self.eq_coeff = eq_coeff * _np.ones(shape, dtype=_np.uint32)
+
+            # Set the eq_coeff parameter on the FPGA.
+            for i in range(size):
+                eq_name = '_'.join(['eq', str(2*i), str(2*i+1), 'coeffs'])
+                for j, coeff in enumerate(self.eq_coeff[i]):
+                    if self.verbose:
+                        print 'POCO%d:' % self.antennas,
+                        print eq_name + '[%d]:'%j, coeff
+                    self.write_int(eq_name, coeff, offset=j)
+        else:
+            for ant_sel in range(self.antennas/2):
+                for addr in range(EQ_ADDR_RANGE):
+                    if self.verbose:
+                        items = (ant_sel, addr, self.eq_coeff)
+                        print 'POCO%d:' % self.antennas,
+                        print 'ant_sel=%d, addr=%2d, eq_coeff=%d' % items
+                    eq_coeff  = (self.eq_coeff) + (1 << 17)
+                    eq_coeff += (addr << 20) + (ant_sel << 28)
+                    self.write_int('eq_coeff', eq_coeff)
 
         # Sync selection
         # TODO completely remove the sync_sel register from all designs. This
@@ -294,7 +342,7 @@ class POCO(_katcp.FpgaClient):
         if self.sync_sel:
             for i in (0, 1, 0):
                 if self.verbose:
-                    print 'RPOCO%d:' % self.antennas, 'sync_pulse:', i
+                    print 'POCO%d:' % self.antennas, 'sync_pulse:', i
                 self.write_int('Sync_sync_pulse', i)
 
         print 'Starting the correlator.'
@@ -312,10 +360,8 @@ class POCO(_katcp.FpgaClient):
         the sync selection and the integration counter from the
         correlator.
         """
-        self.sync_sel = self.read_int('Sync_sync_sel')
         self.count = self.read_int('acc_num')
         self.acc_len = self.read_int('acc_length')
-        self.eq_coeff = self.read_int('eq_coeff')
         self.fft_shift = self.read_int('ctrl_sw')
         self.insel = self.read_int('insel_insel_data')
         self.int_time  = self.acc_len / self.samp_rate
@@ -358,19 +404,19 @@ class POCO(_katcp.FpgaClient):
         imag_dev = prefix + 'imag'
 
         # Read the BRAM's
-        real_raw = self.read(real_dev, BRAM_SIZE)
+        real_raw = self.read(real_dev, self.bram_size)
         if corr_pair[0] != corr_pair[1]:
-            imag_raw = self.read(imag_dev, BRAM_SIZE)
+            imag_raw = self.read(imag_dev, self.bram_size)
         else:
-            imag_raw = '\x00' * BRAM_SIZE
+            imag_raw = '\x00' * self.bram_size
 
         # Convert the strings to numeric data
-        cx_data      = _np.zeros(NCHAN << 1, dtype=_np.complex64)
+        cx_data      = _np.zeros(self.nchan << 1, dtype=_np.complex64)
         cx_data.real = _np.fromstring(real_raw, '>i4')
         cx_data.imag = _np.fromstring(imag_raw, '>i4')
 
         # The data needs to be reshaped to account for the two FFT stages
-        return cx_data.reshape((NCHAN, 2)).transpose()
+        return cx_data.reshape((self.nchan, 2)).transpose()
 
     def reconnect(self):
         """
@@ -396,7 +442,7 @@ class POCO(_katcp.FpgaClient):
             antenna_list = map(self.get_ant_ind, antenna_list)
         while True:
             jd = self.poll()
-            print 'RPOCO%d: Integration count: %d' % (ants, self.count)
+            print 'POCO%d: Integration count: %d' % (ants, self.count)
 
             # Read and save data from all BRAM's
             try:
@@ -455,7 +501,7 @@ class POCO(_katcp.FpgaClient):
         # Use the nyquiqt zone to determine frequency information that will be
         # written to the miriad file. Frequencies are in GHz (not sure why...)
         nyquist_ghz = samp_rate / 2 / 1e9
-        sdf = nyquist_ghz / NCHAN
+        sdf = nyquist_ghz / self.nchan
         if nyquist_zone % 2:
             sfreq = (nyquist_zone - 1) * nyquist_ghz
         else:
@@ -463,11 +509,9 @@ class POCO(_katcp.FpgaClient):
             sdf *= -1
 
         # Get basic attributes of the observation and the correlator
-        self.aa = _aipy.cal.get_aa(calfile, sdf, sfreq, NCHAN)
-        self.fst, self.snd = self.get_xmult()
+        self.aa = _aipy.cal.get_aa(calfile, sdf, sfreq, self.nchan)
         self.sdf = sdf
         self.sfreq = sfreq
-        self.nchan = NCHAN
         self.bandpass = bandpass
         self.samp_rate = samp_rate
         self.nyquist = nyquist_zone
@@ -629,7 +673,9 @@ class POCO(_katcp.FpgaClient):
                 print 'Initializing bof process on FPGA.'
                 self.progdev(poco_bof)
             elif self.model == 2:
-                _os.system(' '.join(['adc16_init.rb', self.host, poco_bof]))
+                prog_cmd = ['adc16_init.rb', self.host, poco_bof]
+                if _os.system(' '.join(prog_cmd)):
+                    raise RuntimeError('ERROR: Cannot initialize ADC.')
         else:
             print 'Bof process already running on FPGA.'
         if self.verbose:
@@ -646,11 +692,9 @@ class POCO(_katcp.FpgaClient):
             self.int_time  = self.acc_len / self.samp_rate
             if self.verbose:
                 print '%-20s:\t%d' % ('acc_length', self.acc_len)
-                print '%-20s:\t%d' % ('eq_coeff', self.eq_coeff)
                 print '%-20s:\t%d' % ('ctrl_sw', self.fft_shift)
                 print '%-20s:\t%d' % ('insel_insel_data', self.insel)
                 print
-            self.write_int('eq_coeff',         self.eq_coeff)
             self.write_int('ctrl_sw',          self.fft_shift)
             self.write_int('insel_insel_data', self.insel)
 
@@ -670,7 +714,7 @@ class POCO(_katcp.FpgaClient):
 
         ants = self.antennas
         filename = '.'.join([self.filename, str(get_jul_date()), 'uv'])
-        print 'RPOCO%d: Closing UV file and renaming to %s.' % (ants, filename)
+        print 'POCO%d: Closing UV file and renaming to %s.' % (ants, filename)
         _os.rename('TMP_FILE', filename)
 
     def uv_open(self):
@@ -704,8 +748,8 @@ class POCO(_katcp.FpgaClient):
         uv['nchan'] = uv['nschan'] = self.nchan
         uv['inttime'] = self.int_time
 
-        if self.bandpass is None:
-            self.bandpass = _np.ones(BRAM_SIZE, dtype=_np.complex)
+        if self.bandpass is None: # XXX why is this bram_size?
+            self.bandpass = _np.ones(self.bram_size, dtype=_np.complex)
         uv['bandpass']= self.bandpass.flatten()
         uv['nspect0'] = self.antennas
         uv['nchan0'] = self.nchan
@@ -745,6 +789,229 @@ class POCO(_katcp.FpgaClient):
 
         # Write to the UV file (what a helpful comment right there...)
         self.uv.write(preamble, data, flags=flags)
+
+class POCOdemux2(POCO):
+    # TODO funtions to impliment:
+    # start_bof
+    # poco_init
+    # poco_recall
+    # read_corr
+    # retrieve_data
+    def get_xmult(self):
+        """
+        This function gets all of the cross-multiplication combos that
+        the correlator multiplies. This is useful for testing purposes
+        and the class data member ``antennas`` needs to be set to use
+        this function. This function returns a table of all of the
+        cross-correlation pairs that are on the correlator.
+        """
+        size = self.antennas
+        return [(i, j) for i in range(size) for j in range(size) if i <= j]
+
+    def poco_init(self):
+        """
+        This function performs some initial procedures for the pocket
+        correlator, setting the equalization coefficients and the sync.
+
+        Input:
+
+        - ``sync_sel``: This parameter tells whether or not to use an \
+                onboard syncronizer (True) or an external one (False).
+        """
+        # Format the eq_coeff parameter to write it into the FPGA
+        size = self.antennas
+        error = 'ERROR: EQ coeff does not match correlator size.'
+        try:
+            eq_coeff = int(self.eq_coeff) # Test to see if scalar
+            shape = (size, self.nchan)
+            self.eq_coeff = eq_coeff * _np.ones(shape, dtype=_np.uint32)
+        except TypeError:
+            eq = np.array(self.eq_coeff, dtype=_np.uint32)
+            if len(eq.shape) == 1:
+                if eq.shape[0] == size:
+                    clist = [eq[i]*_np.ones(self.nchan) for i in range(size)]
+                elif eq.shape[0] == self.nchan:
+                    clist = [eq for i in range(size)]
+                else:
+                    raise ValueError(error)
+                self.eq_coeff = _np.array(clist)
+            elif len(eq.shape) == 2:
+                if eq.shape != (size, self.nchan):
+                    raise ValueError(error)
+                self.eq_coeff = eq
+            else:
+                raise ValueError(error)
+
+        # Set the eq_coeff parameter on the FPGA.
+        for i in range(size):
+            eq_name = '_'.join(['eq', str(i), 'coeffs'])
+            for j, coeff in enumerate(self.eq_coeff[i]):
+                if self.verbose:
+                    print 'POCO%d:' % self.antennas,
+                    print eq_name + '[%d]:'%j, coeff
+                self.write_int(eq_name, coeff, offset=j)
+
+        # Sync selection
+        self.write_int('sync_arm', 0)
+        for i in (1, 1 | (1 << 4), 0):
+            if self.verbose:
+                print 'POCO%d:' % self.antennas, 'sync_arm:', i
+            self.write_int('sync_arm', i)
+
+        print 'Starting the correlator.'
+        self.count = 0
+        self.write_int('acc_length', self.acc_len)
+        print 'Integration time:', self.int_time, 's'
+
+        # The first integration is all junk.
+        while self.count < 1:
+            self.poll()
+
+    def poco_recall(self):
+        """
+        If the bof process is alredy running, this function retrieves
+        the sync selection and the integration counter from the
+        correlator.
+        """
+        self.count = self.read_int('acc_num')
+        self.acc_len = self.read_int('acc_length')
+        self.fft_shift = self.read_int('pfb_ctrl')
+        self.insel = self.read_int('input_source_sel')
+        self.int_time  = self.acc_len / self.samp_rate
+
+    def read_corr(self, corr_pair):
+        """
+        This function reads out cross-multiplied data from a specific
+        BRAM on the ROACH and returns data from the two FFT stages.
+
+        Input:
+
+        - ``corr_pair``: Tuple telling which two antennas being \
+                cross-correlated need to be read from the ROACH.
+
+        Return:
+
+        - Data in the structure np.array([stage1, stage2])
+        """
+        # Generate the device names
+        prefix   = 'xengine%d_' % self.antennas
+        prefix  += self.get_corr_name(corr_pair) + '_'
+        real_dev = prefix + 'real'
+        imag_dev = prefix + 'imag'
+
+        # Read the BRAM's
+        real_raw = self.read(real_dev, self.bram_size)
+        if corr_pair[0] != corr_pair[1]:
+            imag_raw = self.read(imag_dev, self.bram_size)
+        else:
+            imag_raw = '\x00' * self.bram_size
+
+        # Convert the strings to numeric data
+        cx_data      = _np.zeros(self.nchan, dtype=_np.complex64)
+        cx_data.real = _np.fromstring(real_raw, '>i4')
+        cx_data.imag = _np.fromstring(imag_raw, '>i4')
+        return cx_data
+
+    def retrieve_data(self, antenna_list=None):
+        """
+        This function retrieves data off of the ROACH and writes it to
+        uv files.
+        """
+        ants  = self.antennas
+        start = self.count
+        if antenna_list is not None and self.model == 2:
+            antenna_list = map(self.get_ant_ind, antenna_list)
+        while True:
+            jd = self.poll()
+            print 'POCO%d: Integration count: %d' % (ants, self.count)
+
+            # Read and save data from all BRAM's
+            try:
+                for pair in self.pairs:
+                    if self.check_corr(pair, antenna_list):
+                        corr_data = self.read_corr(pair)
+                        self.uv_update(pair, corr_data, jd)
+            except RuntimeError:
+                print 'WARNING: Cannot reach the ROACH. Skipping integration.'
+                self.reconnect()
+                continue
+
+            # Check if there is time for more integrations
+            if self.limit is not None and self.count + 1 > self.limit:
+                print 'Time limit reached.'
+                self.uv_close()
+                return
+
+            # Make a new UV file every 300 integrations
+            if (self.count - start) % 300 == 0:
+                print 'Closing UV file.'
+                self.uv_close()
+                print 'Reopening a new UV file.'
+                self.uv_open()
+
+    def start_bof(self, acc_len, eq_coeff, fft_shift, insel, force_restart):
+        """
+        This function starts the bof file on the ROACH. This docstring
+        only gives a brief overview of the parameters, and more
+        comprehensive explanations can be found elsewhere within the
+        documentation.
+
+        Input:
+
+        - ``acc_len``: Integration/dump time. This can be converted \
+                to a time in seconds as \
+                :math:`t = \\dfrac{acc\_len}{f_{samp}}`.
+        - ``eq_coeff``: Equalization coefficient for the ROACH.
+        - ``fft_shift``: Integer telling which stages in the pocket \
+                correlator's FFT block to shift.
+        - ``insel``: Selects which input to use.
+        - ``force_restart``: This function forces the pocket \
+                correlator to be restarted, as opposed to letting \
+                it continue running if it was.
+
+        Return:
+
+        - ``prog_bof``: True if the ROACH was reprogrammed with the bof file. \
+                False if the bof file was already running.
+        """
+        # Start the bof process if it isn't running already.
+        prog_bof, configure = [not b for b in self.check_running()]
+        poco_bof = self.boffile
+
+        if force_restart:
+            print 'WARNING: Forcing a restart of the bof process.'
+            self.progdev('')
+            prog_bof = True
+
+        # The ROACH2 has different initialization prcedures than the ROACH.
+        if prog_bof:
+            prog_cmd = ['adc16_init.rb', '-d', '2', self.host, poco_bof]
+            if _os.system(' '.join(prog_cmd)):
+                raise RuntimeError('ERROR: Cannot initialize ADC.')
+        else:
+            print 'Bof process already running on FPGA.'
+        if self.verbose:
+            print 'bof process:', poco_bof
+            print
+
+        # Write FPGA parameters to the ROACH and save them.
+        if prog_bof or configure:
+            print 'Configuring pocket correlator.'
+            self.acc_len   = acc_len
+            self.eq_coeff  = eq_coeff
+            self.fft_shift = fft_shift
+            self.insel     = insel
+            self.int_time  = self.acc_len / self.samp_rate
+            if self.verbose:
+                print '%-20s:\t%d' % ('acc_length', self.acc_len)
+                print '%-20s:\t%d' % ('pfb_ctrl', self.fft_shift)
+                print '%-20s:\t%d' % ('input_source_sel', self.insel)
+                print
+            self.write_int('pfb_ctrl', self.fft_shift)
+            self.write_int('input_source_sel', self.insel)
+
+        # Return whether the bof file was started or configured
+        return prog_bof or configure
 
 def get_ant_index(model, index):
     """
@@ -847,7 +1114,55 @@ def get_seconds(date=None, fmt=TIME_FMT):
     else:
         return _time.mktime(_time.strptime(date, fmt))
 
+def is_demux2(poco):
+    """
+    This function detects if a poco model needs demux2 ADC settings.
+
+    Input:
+
+    - ``poco``: Name of a correlator model.
+    """
+    return poco == 'spoco6'
+
+def mode_list2int(modelist):
+    """
+    list is [board, board version, demux, antennas]
+    """
+    modelist = modelist[:] # Don't use the original.
+    assert len(modelist) == 4, 'Attribute list must have 4 items.'
+    modelist[0] = ord(modelist[0].lower()[0]) - ord('a') # position in alphabet
+    attr_bits = [5,3,3,5]
+    bitpos = _np.r_[0, _np.cumsum(attr_bits[:-1])]
+    attr = zip(modelist, bitpos)
+    mode = sum([a << b for a, b in attr])
+    return mode
+
+def mode_int2list(mode):
+    """
+    list is [board, board version, demux, antennas]
+    """
+    # Bits per
+    attr_bits = [5,3,3,5]
+    bitpos = _np.r_[0, _np.cumsum(attr_bits[:-1])]
+
+    # Get info out of number
+    modelist = []
+    for nb, pos in zip(attr_bits, bitpos):
+        sel = sum([1 << i for i in range(nb)]) << pos
+        modelist.append((mode & sel) >> pos)
+
+    # Set the board
+    if modelist[0] == ord('r') - ord('a'):
+        modelist[0] = 'roach'
+    elif modelist[0] == ord('s') - ord('a'):
+        modelist[0] = 'snap'
+
+    return modelist
+
 def spec_list(infiles, ant_i, ant_j, verbose=False):
+    """
+    Originally in plot_mean_corr.py
+    """
     # Initialize arrays to store the spectra
     spectra_r = []
     spectra_i = []
