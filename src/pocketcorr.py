@@ -17,11 +17,12 @@
 ## along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ################################################################################
 
-import os         as _os
-import sys        as _sys
-import aipy       as _aipy
-import time       as _time
-import numpy      as _np
+import os           as _os
+import sys          as _sys
+import aipy         as _aipy
+import time         as _time
+import numpy        as _np
+import numpy.random as _npr
 from corr import katcp_wrapper as _katcp
 
 POCO_BOF8   = 'rpoco8_100.bof'
@@ -43,6 +44,8 @@ UV_VAR_TYPES = {
     'ischan':   'i', 'epoch':    'r', 'veldop':   'r', 'vsource':  'r',
     'ra':       'd', 'obsra':    'd', 'lst':      'd', 'pol':      'i',
 }
+
+CLIENT_PROMPT = 'poco> '
 
 class POCO(_katcp.FpgaClient):
     """
@@ -76,6 +79,14 @@ class POCO(_katcp.FpgaClient):
         self.insel     = None
         self.sync_sel  = True
 
+        # Data collection parameters
+        self.limit = None
+
+        # Placeholder for the optional multiprocessing mode.
+        self.mp = False
+        self.socket = None
+        self.queue = None
+
     def check_connected(self, timeout=10):
         """
         This function checks that the ROACH is actually connected. If
@@ -89,7 +100,7 @@ class POCO(_katcp.FpgaClient):
         """
         if not self.wait_connected(timeout):
             raise IOError('Cannot connect to the ROACH.')
-        print 'Opening FPGA client.'
+        self.log('Opening FPGA client.')
 
     def check_corr(self, pair, antenna_list=None):
         """
@@ -121,6 +132,10 @@ class POCO(_katcp.FpgaClient):
             return bool(self.read_int('ping')), self.read_int('acc_num') > 1
         except RuntimeError:
             return False, False
+
+    def cleanup(self):
+        if _os.path.exists('TMP_FILE'):
+            _os.system('rm -rf TMP_FILE')
 
     def get_ant_ext(self, ant_num):
         """
@@ -214,7 +229,7 @@ class POCO(_katcp.FpgaClient):
         - ``rpoco``: Name of the correlator model.
         """
         if self.verbose:
-            print 'Detecting ROACH model.\n'
+            self.log('Detecting ROACH model.\n')
 
         # Get the antenna info from the pocketcorr design
         powchan = 10
@@ -234,8 +249,6 @@ class POCO(_katcp.FpgaClient):
         elif poco == 'spoco6':
             self.model = 2 # Pretending the SNAP board is like a ROACH2
             self.antennas = 6
-            #self.bram_size = 4 << 11
-            #self.nchan = 1 << 11
             self.boffile = SNAP_BOF6
         elif poco == 'spoco12':
             powchan = 9
@@ -263,12 +276,13 @@ class POCO(_katcp.FpgaClient):
             raise RuntimeError('This is not implimented yet.')
 
         if self.verbose:
-            print 'Detected',
+            message = 'Detected '
             if 'rpoco' in poco:
-                print 'ROACH' + (self.model == 2 and '2' or ''),
+                message += 'ROACH' + (self.model == 2 and '2' or '')
             else:
-                print 'SNAP',
-            print 'board with', self.antennas, 'ADC inputs.\n'
+                message += 'SNAP'
+            message += ' board with %d ADC inputs.\n' % self.antennas
+            self.log(message)
 
     def get_xmult(self):
         """
@@ -296,6 +310,35 @@ class POCO(_katcp.FpgaClient):
 
         return (fst, snd)
 
+    def log(self, message, send_pipe=False, status=0):
+        """
+        Simple logger. If the correlator is in multiprocessing mode,
+        then send a message back to the control process.
+
+        Input:
+
+        - ``message``: A string to print.
+        """
+        if self.mp:
+            self.queue.put(message)
+            if send_pipe:
+                self.socket.send((status, message))
+        else:
+            print message
+
+    def mp_init(self, connection, queue):
+        """
+        This function
+
+        Input:
+
+        - ``connection``: Python Connection object created with \
+                multiprocessing.Pipe()
+        """
+        self.mp = True
+        self.socket = connection
+        self.queue = queue
+
     def poco_init(self):
         """
         This function performs some initial procedures for the pocket
@@ -320,16 +363,18 @@ class POCO(_katcp.FpgaClient):
                 eq_name = '_'.join(['eq', str(2*i), str(2*i+1), 'coeffs'])
                 for j, coeff in enumerate(self.eq_coeff[i]):
                     if self.verbose:
-                        print 'POCO%d:' % self.antennas,
-                        print eq_name + '[%d]:'%j, coeff
+                        message = 'POCO%d: ' % self.antennas
+                        message += eq_name + '[%d]: %d' % (j, coeff)
+                        self.log(message) # XXX sending mp in loop?
                     self.write_int(eq_name, coeff, offset=j)
         else:
             for ant_sel in range(self.antennas/2):
                 for addr in range(EQ_ADDR_RANGE):
                     if self.verbose:
                         items = (ant_sel, addr, self.eq_coeff)
-                        print 'POCO%d:' % self.antennas,
-                        print 'ant_sel=%d, addr=%2d, eq_coeff=%d' % items
+                        message = 'POCO%d: ' % self.antennas
+                        message += 'ant_sel=%d, addr=%2d, eq_coeff=%d' % items
+                        self.log(message) # XXX
                     eq_coeff  = (self.eq_coeff) + (1 << 17)
                     eq_coeff += (addr << 20) + (ant_sel << 28)
                     self.write_int('eq_coeff', eq_coeff)
@@ -342,13 +387,13 @@ class POCO(_katcp.FpgaClient):
         if self.sync_sel:
             for i in (0, 1, 0):
                 if self.verbose:
-                    print 'POCO%d:' % self.antennas, 'sync_pulse:', i
+                    self.log('POCO%d: sync_pulse: %d' % (self.antennas, i))
                 self.write_int('Sync_sync_pulse', i)
 
-        print 'Starting the correlator.'
+        self.log('Starting the correlator.')
         self.count = 0
         self.write_int('acc_length', self.acc_len)
-        print 'Integration time:', self.int_time, 's'
+        self.log('Integration time: ' + str(self.int_time) + ' s')
 
         # The first integration is all junk.
         while self.count < 1:
@@ -440,9 +485,12 @@ class POCO(_katcp.FpgaClient):
         start = self.count
         if antenna_list is not None and self.model == 2:
             antenna_list = map(self.get_ant_ind, antenna_list)
+
+        self.uv_open()
         while True:
             jd = self.poll()
-            print 'POCO%d: Integration count: %d' % (ants, self.count)
+            if not self.mp:
+                print 'POCO%d: Integration count: %d' % (ants, self.count)
 
             # Read and save data from all BRAM's
             try:
@@ -459,21 +507,41 @@ class POCO(_katcp.FpgaClient):
                         else:
                             self.uv_update(snd, corr_data[1], jd)
             except RuntimeError:
-                print 'WARNING: Cannot reach the ROACH. Skipping integration.'
+                self.log('WARNING: Cannot connect. Skipping integration.')
                 self.reconnect()
                 continue
 
+            # Check for a quit signal from the controller if in server mode
+            if self.mp and self.socket.poll():
+                cmd = self.socket.recv()
+                if cmd == 'stop':
+                    self.log('Received stop command from user.')
+                    self.socket.send((0, 'Stopping data collection.'))
+                    self.uv_close()
+                    return
+                elif cmd == 'status':
+                    self.log('Received status command from user.')
+                    msg = 'POCO%d: Writing data to disk\n' % ants
+                    msg += 'POCO%d: Integration count: %d' % (ants, self.count)
+                    self.socket.send((0, msg))
+                elif cmd == 'kill-server':
+                    msg = 'Cannot shut down. Data writing in progress.'
+                    self.socket.send((1, msg))
+                else:
+                    self.socket.send((1, 'The correlator is already running.'))
+                    self.log('POCO: Received invalid command: ' + str(cmd))
+
             # Check if there is time for more integrations
             if self.limit is not None and self.count + 1 > self.limit:
-                print 'Time limit reached.'
+                self.log('Time limit reached.')
                 self.uv_close()
                 return
 
             # Make a new UV file every 300 integrations
             if (self.count - start) % 300 == 0:
-                print 'Closing UV file.'
+                self.log('Closing UV file.')
                 self.uv_close()
-                print 'Reopening a new UV file.'
+                self.log('Reopening a new UV file.')
                 self.uv_open()
 
     def set_attributes(self, calfile, samp_rate, nyquist_zone, bandpass=None):
@@ -534,9 +602,14 @@ class POCO(_katcp.FpgaClient):
         """
         self.verbose = state
         if self.verbose:
-            print 'Enabling verbose output.'
+            self.log('Enabling verbose output.')
 
-    def scheduler(self, n_integ=None, start=None, stop=None, interval=None):
+    def scheduler(self,
+                  n_integ=None,
+                  start=None,
+                  stop=None,
+                  interval=None,
+                  no_run=False):
         """
         This function schedules start times, stop times, number of
         integrations, and time intervals to run the correlator.
@@ -548,6 +621,7 @@ class POCO(_katcp.FpgaClient):
         - ``stop``: Stopping time (%Y-%m-%d-%H:%M)
         - ``interval``: Time interval to collect integrations \
                 (U,time)
+        - ``no_run``: Check if the arguments are valid and exit.
 
         The ``n_integ``, ``stop``, and ``interval`` arguments are
         mutually exclusive and can't simultaneously be used.
@@ -562,11 +636,23 @@ class POCO(_katcp.FpgaClient):
         """
         # Check for redundant values.
         if n_integ is not None and stop is not None:
-            raise ValueError('ERROR: n_integ and stop cannot both be set.')
+            err_str = 'ERROR: n_integ and stop cannot both be set.'
+            if no_run:
+                return (1, err_str)
+            else:
+                raise ValueError(err_str)
         if n_integ is not None and interval is not None:
-            raise ValueError('ERROR: n_integ and interval cannot both be set.')
+            err_str = 'ERROR: n_integ and interval cannot both be set.'
+            if no_run:
+                return (1, err_str)
+            else:
+                raise ValueError(err_str)
         if stop is not None and interval is not None:
-            raise ValueError('ERROR: stop and interval cannot both be set.')
+            err_str = 'ERROR: stop and interval cannot both be set.'
+            if no_run:
+                return (1, err_str)
+            else:
+                raise ValueError(err_str)
 
         # Convert the start time into an integer.
         if start is None:
@@ -575,7 +661,11 @@ class POCO(_katcp.FpgaClient):
         else:
             start = get_seconds(start)
             if start <= _time.time():
-                raise ValueError('Starting time cannot be in the past.')
+                err_str = 'Starting time cannot be in the past.'
+                if no_run:
+                    return (1, err_str)
+                else:
+                    raise ValueError(err_str)
             wait = True
 
         # Determine the number of integrations to perform
@@ -597,14 +687,22 @@ class POCO(_katcp.FpgaClient):
                     elif unit == 'M':
                         conversion = 60
                     else:
-                        raise ValueError('Invalid interval unit: ' + unit)
+                        err_str = 'Invalid interval unit: ' + unit
+                        if no_run:
+                            return (1, err_str)
+                        else:
+                            raise ValueError(err_str)
 
                     stop = start + conversion * float(interval)
             else:
                 stop = get_seconds(stop)
                 if stop <= start:
-                    raise ValueError(' '.join(['The stopping time must occur',
-                                               'after the starting time.']))
+                    err_str = ' '.join(['The stopping time must occur',
+                                        'after the starting time.'])
+                    if no_run:
+                        return (1, err_str)
+                    else:
+                        raise ValueError(err_str)
 
             # stop is None when there is a start time but no stopping limit
             # since I didn't want to wait until the start time to check if the
@@ -616,15 +714,22 @@ class POCO(_katcp.FpgaClient):
 
         # Check of the number of integrations is valid.
         if n_integ is not None and n_integ < 1:
-            raise ValueError(' '.join(['The correlator must be running for',
-                                       'at least the length of one',
-                                       'integration.']))
+            err_str = ' '.join(['The correlator must be running for',
+                                'at least the length of one integration.'])
+            if no_run:
+                return (1, err_str)
+            else:
+                raise ValueError(err_str)
+
+        # No need to run the correlator if just checking parameters.
+        if no_run:
+            return (0, '')
 
         # This is meant to be done after all of the calculations in case there
         # was a user error in setting the intervals so that it can be known as
         # soon as possible and nobody has to wait for it.
         if wait:
-            print 'Waiting until start time:', _time.ctime(start)
+            self.log('Waiting until start time: ' + _time.ctime(start))
             _time.sleep(start - _time.time())
 
         # The limit variable is the last integration that can be performed
@@ -663,38 +768,37 @@ class POCO(_katcp.FpgaClient):
         poco_bof = self.boffile
 
         if force_restart:
-            print 'WARNING: Forcing a restart of the bof process.'
+            self.log('WARNING: Forcing a restart of the bof process.')
             self.progdev('')
             prog_bof = True
 
         # The ROACH2 has different initialization prcedures than the ROACH.
         if prog_bof:
             if self.model == 1:
-                print 'Initializing bof process on FPGA.'
+                self.log('Initializing bof process on FPGA.')
                 self.progdev(poco_bof)
             elif self.model == 2:
                 prog_cmd = ['adc16_init.rb', self.host, poco_bof]
                 if _os.system(' '.join(prog_cmd)):
                     raise RuntimeError('ERROR: Cannot initialize ADC.')
         else:
-            print 'Bof process already running on FPGA.'
+            self.log('Bof process already running on FPGA.')
         if self.verbose:
-            print 'bof process:', poco_bof
-            print
+            self.log('bof process: ' + poco_bof + '\n')
 
         # Write FPGA parameters to the ROACH and save them.
         if prog_bof or configure:
-            print 'Configuring pocket correlator.'
+            self.log('Configuring pocket correlator.')
             self.acc_len   = acc_len
             self.eq_coeff  = eq_coeff
             self.fft_shift = fft_shift
             self.insel     = insel
             self.int_time  = self.acc_len / self.samp_rate
             if self.verbose:
-                print '%-20s:\t%d' % ('acc_length', self.acc_len)
-                print '%-20s:\t%d' % ('ctrl_sw', self.fft_shift)
-                print '%-20s:\t%d' % ('insel_insel_data', self.insel)
-                print
+                message = '%-20s:\t%d\n' % ('acc_length', self.acc_len)
+                message += '%-20s:\t%d\n' % ('ctrl_sw', self.fft_shift)
+                message += '%-20s:\t%d\n\n' % ('insel_insel_data', self.insel)
+                self.log(message)
             self.write_int('ctrl_sw',          self.fft_shift)
             self.write_int('insel_insel_data', self.insel)
 
@@ -714,7 +818,7 @@ class POCO(_katcp.FpgaClient):
 
         ants = self.antennas
         filename = '.'.join([self.filename, str(get_jul_date()), 'uv'])
-        print 'POCO%d: Closing UV file and renaming to %s.' % (ants, filename)
+        self.log('POCO%d: Closing UV file and renaming to %s.' % (ants, filename))
         _os.rename('TMP_FILE', filename)
 
     def uv_open(self):
@@ -847,21 +951,22 @@ class POCOdemux2(POCO):
             eq_name = '_'.join(['eq', str(i), 'coeffs'])
             for j, coeff in enumerate(self.eq_coeff[i]):
                 if self.verbose:
-                    print 'POCO%d:' % self.antennas,
-                    print eq_name + '[%d]:'%j, coeff
+                    message = 'POCO%d: ' % self.antennas
+                    message += eq_name + '[%d]:'% (j, coeff)
+                    self.log(message)
                 self.write_int(eq_name, coeff, offset=j)
 
         # Sync selection
         self.write_int('sync_arm', 0)
         for i in (1, 1 | (1 << 4), 0):
             if self.verbose:
-                print 'POCO%d:' % self.antennas, 'sync_arm:', i
+                self.log('POCO%d: sync_arm: %d' % (self.antennas, i))
             self.write_int('sync_arm', i)
 
-        print 'Starting the correlator.'
+        self.log('Starting the correlator.')
         self.count = 0
         self.write_int('acc_length', self.acc_len)
-        print 'Integration time:', self.int_time, 's'
+        self.log('Integration time: ' + str(self.int_time) + ' s')
 
         # The first integration is all junk.
         while self.count < 1:
@@ -923,7 +1028,10 @@ class POCOdemux2(POCO):
             antenna_list = map(self.get_ant_ind, antenna_list)
         while True:
             jd = self.poll()
-            print 'POCO%d: Integration count: %d' % (ants, self.count)
+            if self.mp:
+                self.queue.put(('num', self.count))
+            else:
+                print 'POCO%d: Integration count: %d' % (ants, self.count)
 
             # Read and save data from all BRAM's
             try:
@@ -932,21 +1040,21 @@ class POCOdemux2(POCO):
                         corr_data = self.read_corr(pair)
                         self.uv_update(pair, corr_data, jd)
             except RuntimeError:
-                print 'WARNING: Cannot reach the ROACH. Skipping integration.'
+                self.log('WARNING: Cannot reach the ROACH. Skipping integration.')
                 self.reconnect()
                 continue
 
             # Check if there is time for more integrations
             if self.limit is not None and self.count + 1 > self.limit:
-                print 'Time limit reached.'
+                self.log('Time limit reached.')
                 self.uv_close()
                 return
 
             # Make a new UV file every 300 integrations
             if (self.count - start) % 300 == 0:
-                print 'Closing UV file.'
+                self.log('Closing UV file.')
                 self.uv_close()
-                print 'Reopening a new UV file.'
+                self.log('Reopening a new UV file.')
                 self.uv_open()
 
     def start_bof(self, acc_len, eq_coeff, fft_shift, insel, force_restart):
@@ -979,7 +1087,7 @@ class POCOdemux2(POCO):
         poco_bof = self.boffile
 
         if force_restart:
-            print 'WARNING: Forcing a restart of the bof process.'
+            self.log('WARNING: Forcing a restart of the bof process.')
             self.progdev('')
             prog_bof = True
 
@@ -989,29 +1097,84 @@ class POCOdemux2(POCO):
             if _os.system(' '.join(prog_cmd)):
                 raise RuntimeError('ERROR: Cannot initialize ADC.')
         else:
-            print 'Bof process already running on FPGA.'
+            self.log('Bof process already running on FPGA.')
         if self.verbose:
-            print 'bof process:', poco_bof
-            print
+            self.log('bof process: ' + poco_bof + '\n')
 
         # Write FPGA parameters to the ROACH and save them.
         if prog_bof or configure:
-            print 'Configuring pocket correlator.'
+            self.log('Configuring pocket correlator.')
             self.acc_len   = acc_len
             self.eq_coeff  = eq_coeff
             self.fft_shift = fft_shift
             self.insel     = insel
             self.int_time  = self.acc_len / self.samp_rate
             if self.verbose:
-                print '%-20s:\t%d' % ('acc_length', self.acc_len)
-                print '%-20s:\t%d' % ('pfb_ctrl', self.fft_shift)
-                print '%-20s:\t%d' % ('input_source_sel', self.insel)
-                print
+                message = '%-20s:\t%d\n' % ('acc_length', self.acc_len)
+                message += '%-20s:\t%d\n' % ('pfb_ctrl', self.fft_shift)
+                message += '%-20s:\t%d\n\n' % ('input_source_sel', self.insel)
             self.write_int('pfb_ctrl', self.fft_shift)
             self.write_int('input_source_sel', self.insel)
 
         # Return whether the bof file was started or configured
         return prog_bof or configure
+
+# Debugging class
+class FakeROACH(POCO):
+    """
+    Simulated ROACH board for offline testing.
+    """
+    def check_connected(self):
+        return True
+
+    def poco_init(self):
+        return
+
+    def poco_recall(self):
+        return
+
+    def poll(self):
+        """
+        Wait until the accumulation number has updated.
+        """
+        _time.sleep(self.int_time)
+        jd = get_jul_date(_time.time() - 0.5*self.int_time)
+        self.count += 1
+        return jd
+
+    def progdev(self, *args, **kwargs):
+        return 'ok'
+
+    def read_corr(self, corr_pair):
+        """
+        Generate fake data to store in the UV file.
+        """
+        # Convert the strings to numeric data
+        lendat  = self.nchan << 1
+        window  = 10 * _np.abs(2*_np.sin(_np.pi * _np.arange(lendat) / lendat))
+        cx_data = _np.zeros(lendat, dtype=_np.complex64)
+        cx_data.real = _npr.randn(lendat) + window
+        cx_data.imag = _npr.randn(lendat) + window
+        cx_data[100:200] += 20.0
+
+        # The data needs to be reshaped to account for the two FFT stages
+        return cx_data.reshape((self.nchan, 2)).transpose()
+
+    def read_int(self, bram):
+        return 0
+
+    def start_bof(self, acc_len=1<<24, eq_coeff=16, fft_shift=0x3ff, insel=0, force_restart=None):
+        """
+        Set object variables in the POCO start_bof function.
+        """
+        self.acc_len   = acc_len
+        self.eq_coeff  = eq_coeff
+        self.fft_shift = fft_shift
+        self.insel     = insel
+        self.int_time  = self.acc_len / self.samp_rate
+        self.sync_sel  = True
+        self.count     = 0
+        return True
 
 def get_ant_index(model, index):
     """

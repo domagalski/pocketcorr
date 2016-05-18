@@ -72,3 +72,4 @@ if __name__ == '__main__':
     for i in range(nslice):
         insel += args[i] << i*shift
     print insel
+    print bin(insel)
