@@ -143,6 +143,7 @@ def ctrl_poco(lock, queue, pipe, manager):
         # Get info back from the roach thread and send to the client
         error, message = pipe.recv()
         if error:
+            server = True
             message = 'ERROR (' + data[0] + '): ' + message
         if netcat_shell and (data[0] != 'kill-server' or error):
             message += netcat_prompt

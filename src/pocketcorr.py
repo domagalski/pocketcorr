@@ -529,7 +529,9 @@ class POCO(_katcp.FpgaClient):
                     self.socket.send((1, msg))
                 else:
                     self.socket.send((1, 'The correlator is already running.'))
-                    self.log('POCO: Received invalid command: ' + str(cmd))
+                    if not isinstance(cmd, str):
+                        cmd = ' '.join(cmd)
+                    self.log('POCO: Received invalid command: ' + cmd)
 
             # Check if there is time for more integrations
             if self.limit is not None and self.count + 1 > self.limit:
