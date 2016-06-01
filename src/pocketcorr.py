@@ -22,6 +22,7 @@ import sys          as _sys
 import aipy         as _aipy
 import time         as _time
 import numpy        as _np
+import struct       as _struct
 import numpy.random as _npr
 from corr import katcp_wrapper as _katcp
 
@@ -45,8 +46,6 @@ UV_VAR_TYPES = {
     'ra':       'd', 'obsra':    'd', 'lst':      'd', 'pol':      'i',
 }
 
-CLIENT_PROMPT = 'poco> '
-
 class POCO(_katcp.FpgaClient):
     """
     Class for communicating with a ROACH board running a pocket
@@ -62,13 +61,16 @@ class POCO(_katcp.FpgaClient):
         _katcp.FpgaClient.__init__(self, *args, **kwargs)
 
         # Default values for ROACH model
+        self.poco = None
         self.model = None
         self.antennas = None
         self.nchan = None
 
         # Display options
         self.verbose = False
-        self.filename = 'poco'
+        self.filename = _os.path.abspath('poco')
+        self.writedir = _os.path.dirname(self.filename)
+        self.tmp_file = _os.path.join(self.writedir, 'TMP_FILE')
 
         # Set some null values for FPGA parameters.
         self.samp_rate = None
@@ -134,8 +136,8 @@ class POCO(_katcp.FpgaClient):
             return False, False
 
     def cleanup(self):
-        if _os.path.exists('TMP_FILE'):
-            _os.system('rm -rf TMP_FILE')
+        if _os.path.exists(self.tmp_file):
+            _os.system('rm -rf ' + self.tmp_file)
 
     def get_ant_ext(self, ant_num):
         """
@@ -233,24 +235,24 @@ class POCO(_katcp.FpgaClient):
 
         # Get the antenna info from the pocketcorr design
         powchan = 10
-        poco = poco.lower()
-        if poco == 'rpoco8':
+        self.poco = poco.lower()
+        if self.poco == 'rpoco8':
             self.model = 1
             self.antennas = 8
             self.boffile = POCO_BOF8
-        elif poco == 'rpoco8_r2':
+        elif self.poco == 'rpoco8_r2':
             self.model = 2
             self.antennas = 8
             self.boffile = POCO2_BOF8
-        elif poco == 'rpoco16':
+        elif self.poco == 'rpoco16':
             self.model = 2
             self.antennas = 16
             self.boffile = POCO2_BOF16
-        elif poco == 'spoco6':
+        elif self.poco == 'spoco6':
             self.model = 2 # Pretending the SNAP board is like a ROACH2
             self.antennas = 6
             self.boffile = SNAP_BOF6
-        elif poco == 'spoco12':
+        elif self.poco == 'spoco12':
             powchan = 9
             self.model = 2 # Pretending the SNAP board is like a ROACH2
             self.antennas = 12
@@ -259,14 +261,14 @@ class POCO(_katcp.FpgaClient):
             raise ValueError('Invalid poco routine.')
 
         # Set the bram size and number of channels
-        self.bram_size = 4 << (powchan + 1 - is_demux2(poco))
+        self.bram_size = 4 << (powchan + 1 - is_demux2(self.poco))
         self.nchan = 1 << powchan
 
         # Update the filename to reflect the POCO version.
         self.filename += str(self.antennas)
 
         # Get the cross-multiplications XXX snap6 friendlines needed.
-        if is_demux2(poco):
+        if is_demux2(self.poco):
             self.pairs = self.get_xmult()
         else:
             self.fst, self.snd = self.get_xmult()
@@ -277,7 +279,7 @@ class POCO(_katcp.FpgaClient):
 
         if self.verbose:
             message = 'Detected '
-            if 'rpoco' in poco:
+            if 'rpoco' in self.poco:
                 message += 'ROACH' + (self.model == 2 and '2' or '')
             else:
                 message += 'SNAP'
@@ -351,8 +353,7 @@ class POCO(_katcp.FpgaClient):
         """
         # Set the eq_coeff parameter.
         # 0-16 coeff, 17 coeff-en, 20-25 coeff-addr, 30-31 ant-pair-sel
-        snap12 = True
-        if snap12: # XXX impliment this system for all correlators.
+        if self.poco == 'snap12': # XXX impliment this system for all correlators.
             size = self.antennas / 2
             eq_coeff = int(self.eq_coeff) # Test to see if scalar
             shape = (size, 2*self.nchan)
@@ -397,6 +398,7 @@ class POCO(_katcp.FpgaClient):
 
         # The first integration is all junk.
         while self.count < 1:
+            print 'hello'
             self.poll()
 
     def poco_recall(self):
@@ -595,8 +597,18 @@ class POCO(_katcp.FpgaClient):
 
         - ``filename``: Filename base for the UV files.
         """
-        _os.system('mkdir -pv ' + _os.path.dirname(_os.path.abspath(filename)))
-        self.filename = filename
+        fname, wdir, tmp = self.filename, self.writedir, self.tmp_file
+        self.filename = _os.path.abspath(filename)
+        self.writedir = _os.path.dirname(self.filename)
+        self.tmp_file = _os.path.join(self.writedir, 'TMP_FILE')
+        if _os.system('mkdir -pv ' + self.writedir):
+            self.log('ERROR: Cannot set filename for saving. Using old values.')
+            self.filename = fname
+            self.writedir = wdir
+            self.tmp_file = tmp
+            return 1
+        else:
+            return 0
 
     def set_verbose(self, state):
         """
@@ -740,7 +752,8 @@ class POCO(_katcp.FpgaClient):
         if n_integ is not None:
             self.limit = self.count + n_integ
 
-    def start_bof(self, acc_len, eq_coeff, fft_shift, insel, force_restart):
+    def start_bof(self, acc_len, eq_coeff, fft_shift, insel, force_restart,
+                  internal_synth=False, synth_file=None, synth_value=None):
         """
         This function starts the bof file on the ROACH. This docstring
         only gives a brief overview of the parameters, and more
@@ -780,9 +793,14 @@ class POCO(_katcp.FpgaClient):
                 self.log('Initializing bof process on FPGA.')
                 self.progdev(poco_bof)
             elif self.model == 2:
-                prog_cmd = ['adc16_init.rb', self.host, poco_bof]
-                if _os.system(' '.join(prog_cmd)):
-                    raise RuntimeError('ERROR: Cannot initialize ADC.')
+                if self.poco == 'spoco12' and internal_synth:
+                    self.snap_synth(synth_file, synth_value)
+                self.progdev('')
+                self.progdev(self.boffile)
+                self.write_int('adc16_use_synth', 1)
+                #prog_cmd = ['adc16_init.rb', self.host, poco_bof]
+                #if _os.system(' '.join(prog_cmd)):
+                #    raise RuntimeError('ERROR: Cannot initialize ADC.')
         else:
             self.log('Bof process already running on FPGA.')
         if self.verbose:
@@ -807,6 +825,30 @@ class POCO(_katcp.FpgaClient):
         # Return whether the bof file was started or configured
         return prog_bof or configure
 
+    def snap_synth(self, synth_file=None, synth_value=None):
+        """
+        This function programs the synthesizer on SNAP boards. This
+        is to be done before programming the ADC.
+
+        Input:
+
+        - ``synth_file``: Hex file exported from CodeLoader.
+        - ``synth_value``: Synthesizer frequency in MHz.
+        """
+        # Simple value checking to make sure everything is chill.
+        if synth_file is not None and synth_value is not None:
+            raise ValueError('ERROR: Duplicate synth values given.')
+        if synth_file is None and synth_value is None:
+            raise ValueError('ERROR: No synth programming provided.')
+
+        # When the external synth gets programmed, it stays programmed
+        # even if the FPGA gets reprogrammed, or so I think...
+        self.progdev(self.boffile)
+        if synth_file is not None:
+            self.synth_codeloader(synth_file)
+        elif synth_value is not None:
+            raise RuntimeError('ERROR: Cannot set synth from arbitrary value.')
+
     def uv_close(self):
         """
         This function closes the current UV file and renames it to a
@@ -821,7 +863,24 @@ class POCO(_katcp.FpgaClient):
         ants = self.antennas
         filename = '.'.join([self.filename, str(get_jul_date()), 'uv'])
         self.log('POCO%d: Closing UV file and renaming to %s.' % (ants, filename))
-        _os.rename('TMP_FILE', filename)
+        _os.rename(self.tmp_file, filename)
+
+    def synth_codeloader(self, filename):
+        """
+        This function reads a file produced by Code Loader containing
+        values to write to the lmx_ctrl register.
+        """
+        # Read in the lines from the file and convert them to integers
+        # Assumptions: files have DOS line endings (made from Windows) and the
+        # last thing in each line is a hex string.
+        with open(filename) as f:
+            nums = [int(l[-12:-2], 16) for l in f.readlines()]
+
+        # Enable the synth
+        self.write_int('adc16_use_synth', 1)
+
+        for i, n in enumerate(nums):
+            self.write_int('lmx_ctrl', n, True)
 
     def uv_open(self):
         """
@@ -829,7 +888,7 @@ class POCO(_katcp.FpgaClient):
         """
         if self.model is None:
             raise RuntimeError('ROACH model not detected.')
-        uv = _aipy.miriad.UV('TMP_FILE', status = 'new')
+        uv = _aipy.miriad.UV(self.tmp_file, status = 'new')
         for v in UV_VAR_TYPES:
             uv.add_var(v, UV_VAR_TYPES[v])
         rpoco = 'rpoco' + str(self.antennas)
@@ -895,6 +954,28 @@ class POCO(_katcp.FpgaClient):
 
         # Write to the UV file (what a helpful comment right there...)
         self.uv.write(preamble, data, flags=flags)
+
+    def write_testvec(self, ant_num, vector):
+        """
+        This function writes a test vector to the ADC for a particular
+        antenna. This is only supported on the SNAP correlator.
+        """
+        if self.poco != 'spoco12':
+            message = 'WARNING: ADC test vectors not supported on '
+            message += self.poco + '. Ignorning.'
+            self.log(message)
+            return 1
+
+        # Convert to 32 bits, then swap endianness
+        nbytes = len(vector)
+        vector = vector.astype(_np.int8)
+        vector = _struct.pack(nbytes*'b', *vector)
+        vector = ''.join([3*'\x00' + b for b in vector])
+
+        # Write the data to the device
+        bram_name = 'test_vec_' + str(ant_num) + '_ram'
+        self.write(bram_name, vector)
+        return 0
 
 class POCOdemux2(POCO):
     # TODO funtions to impliment:
@@ -1165,7 +1246,9 @@ class FakeROACH(POCO):
     def read_int(self, bram):
         return 0
 
-    def start_bof(self, acc_len=1<<24, eq_coeff=16, fft_shift=0x3ff, insel=0, force_restart=None):
+    def start_bof(self, acc_len=1<<24, eq_coeff=16, fft_shift=0x3ff, insel=0,
+                 force_restart=None, internal_synth=False, synth_file=None,
+                 synth_value=None):
         """
         Set object variables in the POCO start_bof function.
         """

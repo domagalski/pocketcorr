@@ -17,12 +17,16 @@
 ## along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ################################################################################
 
+import os
+import glob
 import time
 import socket
 import argparse
 import threading
 import pocketcorr
 import multiprocessing as mp
+
+TCP_SEND_SIZE = 1024
 
 ctrl_cmd_noargs = [
                    'bofkill',   # Kill the bof process.
@@ -33,8 +37,22 @@ ctrl_cmd_noargs = [
 
 ctrl_cmd_onearg = [
                    'bofstart',  # Start the bof process
+                   'data_dir',  # Set the data directory
                    'fft_shift', # Set the fft shifting stage
                   ]
+
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+CLIENT_PROMPT = bcolors.OKBLUE + 'poco> ' + bcolors.ENDC
+
 def collect_data(roach, args, manger=None):
     """
     Open a UV file and read data into it.
@@ -54,14 +72,16 @@ def ctrl_help():
     helpstr = 'Available commands:'
     helpstr += '\n\tbofkill             Kill the bof process'
     helpstr += '\n\tbofstart [force]    Start the bof process'
+    helpstr += '\n\tdata_dir [dir]      View or set the save directory'
     helpstr += '\n\tfft_shift <shift>   Set the FFT shifting stages'
     helpstr += '\n\thelp                Show this help message'
+    helpstr += '\n\treadout             Copy data from server to client'
     helpstr += '\n\tstatus              Get the correlator status'
     helpstr += '\n\tstart               Start writing data to disk'
     helpstr += '\n\tstop                Stop writing data to disk'
     return helpstr
 
-def ctrl_msg(lock, queue, manager):
+def ctrl_msg(lock, queue):
     """
     Print messages from the correlator thread
     """
@@ -75,7 +95,7 @@ def ctrl_poco(lock, queue, pipe, manager):
     Read commands from the network and control the correlator
     """
     # Set up the message thread.
-    msg_thread = threading.Thread(target=ctrl_msg, args=(lock, queue, manager))
+    msg_thread = threading.Thread(target=ctrl_msg, args=(lock, queue))
     msg_thread.daemon = True
     msg_thread.start()
 
@@ -87,15 +107,23 @@ def ctrl_poco(lock, queue, pipe, manager):
     # Create a shell
     server = True
     netcat_shell = False
-    netcat_prompt = '\n' + pocketcorr.CLIENT_PROMPT
+    netcat_prompt = '\n\n' + CLIENT_PROMPT
     while server:
         data, addr = messenger.recvfrom(1024)
         data = data.strip('\n').split()
 
         # Hitting enter while in netcat or ncat will bring up a prompt
         if not len(data):
-            netcat_shell = True
-            messenger.sendto(netcat_prompt[1:], addr)
+            if netcat_shell:
+                messenger.sendto(netcat_prompt[2:], addr)
+            if not netcat_shell:
+                netcat_shell = True
+                pipe.send('status')
+                _, status = pipe.recv()
+                message = '# POCKETCORR NETCAT CLIENT\n'
+                message += '# To view commands, type ? or help.\n'
+                message += status + netcat_prompt
+                messenger.sendto(message, addr)
             continue
 
         # Print help options
@@ -104,6 +132,17 @@ def ctrl_poco(lock, queue, pipe, manager):
             if netcat_shell:
                 message += netcat_prompt
             messenger.sendto(message, addr)
+            continue
+
+        # Create a TCP client to readout data
+        if data[0] == 'readout':
+            if netcat_shell:
+                message = 'ERROR: use pocketcorr_shell.py for readout.'
+                messenger.sendto(message, addr)
+            elif ctrl_readout(manager['data_dir'], messenger, addr, ctrl_port):
+                messenger.sendto('Error reading data from server.', addr)
+            else:
+                messenger.sendto('Done.', addr)
             continue
 
         # Exit the server if a shutdown command is received.
@@ -149,7 +188,41 @@ def ctrl_poco(lock, queue, pipe, manager):
             message += netcat_prompt
         messenger.sendto(message, addr)
 
-def get_acclen(acc_len, nspec, int_time, samp_rate=200e6):
+
+def ctrl_readout(data_dir, messenger, udp_addr, ctrl_port):
+    """
+    This function uses TCP to copy data files from the server. The UDP
+    socket is used for messages and progress updates.
+
+    I did a quick test and it takes longer to compress an 87 MB uv file
+    using tar on a raspberry pi than it does to scp the same file off of
+    a raspberry pi, so this function does not compress data before
+    reading the data over the network.
+    """
+    # Set up the TCP file transfer machine
+    filedump = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    #filedump.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    filedump.bind(('', ctrl_port))
+    filedump.listen(1)
+    messenger.sendto('Preparing data transfer.', udp_addr)
+    tcp_conn, tcp_addr = filedump.accept()
+
+    fnames = sorted(glob.glob(os.path.join(data_dir, '*.uv')))
+
+    # Send information about how many files there are and receive ready signal
+    sendrecv(tcp_conn, 'nfiles = ' + str(len(fnames)))
+
+    # Time to dump the UV files to the client
+    for fname in fnames:
+        if tcp_send_uv(tcp_conn, fname, TCP_SEND_SIZE):
+            tcp_conn.close()
+            filedump.close()
+            return 1
+    tcp_conn.close()
+    filedump.close()
+    return 0
+
+def get_acclen(acc_len, nspec, int_time, samp_rate=200):
     """
     This function gets the number of clock cycles pre integration.
     """
@@ -163,9 +236,19 @@ def get_acclen(acc_len, nspec, int_time, samp_rate=200e6):
     elif args[1] is not None:
         return args[1] * 2048
     elif args[2] is not None:
-        return int(args[2] * samp_rate / fft_size) * fft_size
+        return int(args[2] * samp_rate * 1e6 / fft_size) * fft_size
     else:
         return default
+
+def get_filesize(filename):
+    """
+    Get the number of bytes in a file.
+    """
+    filedata = open(filename, 'rb')
+    filedata.seek(0, 2)
+    nbytes = filedata.tell()
+    filedata.close()
+    return nbytes
 
 def get_interface(args):
     """
@@ -207,6 +290,7 @@ def run_poco(args, connection=None, queue=None, manager=None):
     rx_setup_bof(roach, args)
     if args.server:
         manager['progbof'] = True
+        manager['data_dir'] = roach.writedir
 
     # Read the data into UV files.
     if args.server:
@@ -252,6 +336,20 @@ def rx_cmd(roach, args, manager):
         args.force_restart = False
         manager['progbof'] = True
 
+    elif command[0] == 'data_dir':
+        if len(command) == 1:
+            manager['data_dir'] = roach.writedir
+            roach.socket.send((0, 'data_dir: ' + roach.writedir))
+        else:
+            data_dir = os.path.abspath(command[0])
+            filename = os.path.basename
+            err = roach.set_filename(os.path.join(data_dir, filename))
+            if err:
+                roach.socket.send((1, 'data_dir: cannot create directory.'))
+            else:
+                manager['data_dir'] = roach.writedir
+                roach.socket.send((0, 'data_dir: new value set.'))
+
     elif command[0] == 'fft_shift':
         if len(command) == 1:
             roach.socket.send((1, 'fft_shift: no value supplied.'))
@@ -273,6 +371,10 @@ def rx_cmd(roach, args, manager):
         roach.fft_shift = shift
         roach.write_int('fft_shift', shift)
 
+    elif command == 'kill-server':
+        roach.log('Shutting down the control server.', True)
+        return False
+
     elif command[0] == 'schedule':
         if not len(command[1]):
             roach.socket.send('ERROR: The scheduler needs parameters.')
@@ -289,10 +391,6 @@ def rx_cmd(roach, args, manager):
         roach.socket.send((0, retmsg))
         roach.scheduler(**command[1])
         collect_data(roach, args)
-
-    elif command == 'kill-server':
-        roach.log('Shutting down the control server.', True)
-        return False
 
     elif command == 'status':
         roach.log('Received status command from user.')
@@ -334,7 +432,7 @@ def rx_setup_attr(roach, args):
     roach.check_connected()
     roach.set_verbose(args.verbose)
     roach.get_model(args.rpoco)
-    roach.set_attributes(args.calfile, args.samp_rate, args.nyquist)
+    roach.set_attributes(args.calfile, args.samp_rate*1e6, args.nyquist)
     if args.filename is not None:
         roach.set_filename(args.filename)
 
@@ -349,14 +447,69 @@ def rx_setup_bof(roach, args):
     eq_coeff      = args.eq_coeff
     int_time      = args.int_time
     fft_shift     = args.fft_shift
+    int_synth     = args.snap_synth
     samp_rate     = args.samp_rate
+    synth_file    = args.synth_file
     force_restart = args.force_restart
 
     acc_len = get_acclen(acc_len, acc_spec, int_time, samp_rate)
-    if roach.start_bof(acc_len, eq_coeff, fft_shift, insel, force_restart):
+    if int_synth and synth_file is not None:
+        samp_rate = None
+    if roach.start_bof(acc_len, eq_coeff, fft_shift, insel, force_restart,
+                       int_synth, synth_file, samp_rate):
         roach.poco_init()
     else:
         roach.poco_recall()
+
+def sendrecv(tcpsocket, message):
+    """
+    Send a message and block until a reply exists.
+    """
+    tcpsocket.send(message)
+    return tcpsocket.recv(1024)
+
+def tcp_send_uv(tcpsocket, filename, bufsize):
+    """
+    Send a UV file with a TCP socket.
+    """
+    # Send filename information
+    basename = os.path.basename(filename)
+
+    # Get status from the client to determine whether to send the file
+    cli_reply = sendrecv(tcpsocket, basename)
+    if cli_reply == 'skip':
+        return 0
+    elif cli_reply == 'quit':
+        return 1
+
+    # Send the components of the UV file to the client
+    fullpaths = sorted(glob.glob(os.path.join(filename, '*')))
+    uvdata = ' '.join(map(os.path.basename, fullpaths))
+    if sendrecv(tcpsocket, uvdata) == 'quit':
+        return 1
+
+    # Send each part of the UV file to the client
+    uvsize = 4096 + sum(map(get_filesize, fullpaths))
+    if sendrecv(tcpsocket, 'uvsize = ' + str(uvsize)) == 'quit':
+        return 1
+    for path in fullpaths:
+        # Send the length of the file to the client
+        nbytes = get_filesize(path)
+        if sendrecv(tcpsocket, 'nbytes = ' + str(nbytes)) == 'quit':
+            return 1
+
+        # Quickly read and send the data to the client socket
+        nchunks = nbytes / bufsize + bool(nbytes % bufsize)
+        filedata = open(path, 'rb')
+        for i in range(nchunks):
+            chunk = filedata.read(bufsize)
+            if sendrecv(tcpsocket, chunk) == 'quit':
+                filedata.close()
+                return 1
+        filedata.close()
+
+    # Exit with success
+    return 0
 
 if __name__ == '__main__':
     time_fmt = pocketcorr.TIME_FMT.replace('%', '%%')
@@ -417,9 +570,13 @@ if __name__ == '__main__':
                         help='Port to use with the ROACH katcp wrapper.')
     parser.add_argument('-S', '--samp-rate',
                         dest='samp_rate',
-                        default=200e6,
+                        default=200,
                         type=float,
-                        help='The ADC sample rate that is being used.')
+                        help='The ADC sample rate that is being used in MHz.')
+    parser.add_argument('--snap-synth', action='store_true',
+                        help='Use the onboard synth (SNAP boards only).')
+    parser.add_argument('--synth-file',
+                        help='Synth configuration file (SNAP boards only.')
     parser.add_argument('-s', '--fft-shift',
                         dest='fft_shift',
                         type=int,
@@ -467,6 +624,7 @@ if __name__ == '__main__':
         srv_pipe, cmd_pipe = mp.Pipe()
         manager = mp.Manager().dict()
         manager['progbof'] = False
+        manager['data_dir'] = './'
 
         # Start the control thread
         ctrl_args = (lock, srv_queue, cmd_pipe, manager)
