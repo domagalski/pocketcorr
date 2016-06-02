@@ -24,9 +24,7 @@ import socket
 import argparse
 
 POCO_PORT = 1420
-TCP_RECV_SIZE = 16384
-TCP_RECV_SIZE = 8192
-TCP_RECV_SIZE = 1024
+TCP_RECV_SIZE = 64 << 10
 UDP_RECV_SIZE = 1024
 
 class bcolors:
@@ -53,6 +51,9 @@ class POCOserver(socket._socketobject):
         # server has been made
         tcp_cli = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         message, udp_addr = self.recvfrom(UDP_RECV_SIZE)
+        if message[:5] == 'ERROR':
+            print message
+            return 1
         tcp_cli.connect(tcp_addr)
 
         # The server sends info about how many files there are as a string that
@@ -73,6 +74,7 @@ class POCOserver(socket._socketobject):
             print
             print 'ERROR: Aborting file transfer.'
         tcp_cli.close()
+        return 0
 
     def exec_cmd(self, command, addr):
         """
@@ -87,13 +89,14 @@ class POCOserver(socket._socketobject):
             else:
                 local_dir = os.getcwd()
 
-            self.client_readout(local_dir, addr)
-        else:
-            try:
-                message, _ = self.recvfrom(UDP_RECV_SIZE)
-                return message
-            except KeyboardInterrupt:
-                print
+            if self.client_readout(local_dir, addr):
+                return
+
+        try:
+            message, _ = self.recvfrom(UDP_RECV_SIZE)
+            return message
+        except KeyboardInterrupt:
+            print
 
 def is_localhost(addr):
     """
@@ -162,21 +165,28 @@ def tcp_recv_uv(tcpsocket, output_dir, bufsize):
     uvnames = recvsend(tcpsocket, 'ready').split()
     exec(recvsend(tcpsocket, 'ready')) # new variable uvsize
     total_bytes_read = 4096 # Size of UV directory
+    last_read = 0
     for name in uvnames:
         # Get the number of data chunks to be read out
         exec(recvsend(tcpsocket, 'ready')) # new variable nbytes
         nchunks = nbytes / bufsize + bool(nbytes % bufsize)
 
         # Write the file
+        filedata = ''
+        while len(filedata) != nbytes:
+            filedata += tcpsocket.recv(bufsize)
+            progress_len = total_bytes_read + len(filedata)
+            if progress_len - last_read > (1 << 20):
+                print_progress(progress_len, uvsize)
+                last_read = progress_len
+        tcpsocket.send('next')
+
+        total_bytes_read += len(filedata)
+
         filename = os.path.join(uvfile, name)
-        filedata = open(filename, 'wb')
-        for i in range(nchunks):
-            chunk = tcpsocket.recv(bufsize)
-            total_bytes_read += len(chunk)
-            filedata.write(chunk)
-            tcpsocket.send('next')
-            print_progress(total_bytes_read, uvsize)
-        filedata.close()
+        with open(filename, 'wb') as f:
+            f.write(filedata)
+
     read_time = time.time() - start_time
 
     # Create size formatting
@@ -269,4 +279,3 @@ if __name__ == '__main__':
         message = poco.exec_cmd(user_input, poco_addr)
         if message is not None:
             print message
-            print

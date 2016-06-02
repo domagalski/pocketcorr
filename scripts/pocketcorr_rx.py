@@ -26,8 +26,6 @@ import threading
 import pocketcorr
 import multiprocessing as mp
 
-TCP_SEND_SIZE = 1024
-
 ctrl_cmd_noargs = [
                    'bofkill',   # Kill the bof process.
                    'status',    # Get correlator status.
@@ -57,13 +55,20 @@ def collect_data(roach, args, manger=None):
     """
     Open a UV file and read data into it.
     """
+    if manager is not None:
+        manager['writing'] = True
     if args.channels is None:
         roach.retrieve_data()
     else:
         channels = args.channels.split(',')
         if roach.model == 1:
             channels = map(int, channels)
+
+
         roach.retrieve_data(channels)
+
+    if manager is not None:
+        manager['writing'] = False
 
 def ctrl_help():
     """
@@ -107,7 +112,7 @@ def ctrl_poco(lock, queue, pipe, manager):
     # Create a shell
     server = True
     netcat_shell = False
-    netcat_prompt = '\n\n' + CLIENT_PROMPT
+    netcat_prompt = '\n' + CLIENT_PROMPT
     while server:
         data, addr = messenger.recvfrom(1024)
         data = data.strip('\n').split()
@@ -138,6 +143,10 @@ def ctrl_poco(lock, queue, pipe, manager):
         if data[0] == 'readout':
             if netcat_shell:
                 message = 'ERROR: use pocketcorr_shell.py for readout.'
+                message += netcat_prompt
+                messenger.sendto(message, addr)
+            elif manager['writing']:
+                message = 'ERROR: Cannot readout data while writing.'
                 messenger.sendto(message, addr)
             elif ctrl_readout(manager['data_dir'], messenger, addr, ctrl_port):
                 messenger.sendto('Error reading data from server.', addr)
@@ -201,7 +210,7 @@ def ctrl_readout(data_dir, messenger, udp_addr, ctrl_port):
     """
     # Set up the TCP file transfer machine
     filedump = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    #filedump.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    filedump.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     filedump.bind(('', ctrl_port))
     filedump.listen(1)
     messenger.sendto('Preparing data transfer.', udp_addr)
@@ -214,7 +223,7 @@ def ctrl_readout(data_dir, messenger, udp_addr, ctrl_port):
 
     # Time to dump the UV files to the client
     for fname in fnames:
-        if tcp_send_uv(tcp_conn, fname, TCP_SEND_SIZE):
+        if tcp_send_uv(tcp_conn, fname):
             tcp_conn.close()
             filedump.close()
             return 1
@@ -390,7 +399,7 @@ def rx_cmd(roach, args, manager):
             retmsg += k + ' = ' + str(command[1][k])
         roach.socket.send((0, retmsg))
         roach.scheduler(**command[1])
-        collect_data(roach, args)
+        collect_data(roach, args, manager)
 
     elif command == 'status':
         roach.log('Received status command from user.')
@@ -399,7 +408,7 @@ def rx_cmd(roach, args, manager):
     elif command == 'start':
         roach.log('Received start command from user.')
         roach.socket.send((0, 'Starting data collection.'))
-        collect_data(roach, args)
+        collect_data(roach, args, manager)
 
     else:
         roach.socket.send((1, 'Invalid command: ' + str(command)))
@@ -468,7 +477,7 @@ def sendrecv(tcpsocket, message):
     tcpsocket.send(message)
     return tcpsocket.recv(1024)
 
-def tcp_send_uv(tcpsocket, filename, bufsize):
+def tcp_send_uv(tcpsocket, filename):
     """
     Send a UV file with a TCP socket.
     """
@@ -489,6 +498,7 @@ def tcp_send_uv(tcpsocket, filename, bufsize):
         return 1
 
     # Send each part of the UV file to the client
+    bufsize = 64 << 20 # Read 64 MiB at a time
     uvsize = 4096 + sum(map(get_filesize, fullpaths))
     if sendrecv(tcpsocket, 'uvsize = ' + str(uvsize)) == 'quit':
         return 1
@@ -501,12 +511,16 @@ def tcp_send_uv(tcpsocket, filename, bufsize):
         # Quickly read and send the data to the client socket
         nchunks = nbytes / bufsize + bool(nbytes % bufsize)
         filedata = open(path, 'rb')
-        for i in range(nchunks):
-            chunk = filedata.read(bufsize)
-            if sendrecv(tcpsocket, chunk) == 'quit':
-                filedata.close()
+        try:
+            for i in range(nchunks):
+                chunk = filedata.read(bufsize)
+                tcpsocket.send(chunk)
+            filedata.close()
+
+            if tcpsocket.recv(1024) == 'quit':
                 return 1
-        filedata.close()
+        except socket.error:
+            return 1
 
     # Exit with success
     return 0
@@ -624,6 +638,7 @@ if __name__ == '__main__':
         srv_pipe, cmd_pipe = mp.Pipe()
         manager = mp.Manager().dict()
         manager['progbof'] = False
+        manager['writing'] = False
         manager['data_dir'] = './'
 
         # Start the control thread
