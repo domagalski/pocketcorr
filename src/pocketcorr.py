@@ -398,7 +398,6 @@ class POCO(_katcp.FpgaClient):
 
         # The first integration is all junk.
         while self.count < 1:
-            print 'hello'
             self.poll()
 
     def poco_recall(self):
@@ -796,11 +795,9 @@ class POCO(_katcp.FpgaClient):
                 if self.poco == 'spoco12' and internal_synth:
                     self.snap_synth(synth_file, synth_value)
                 self.progdev('')
-                self.progdev(self.boffile)
-                self.write_int('adc16_use_synth', 1)
-                #prog_cmd = ['adc16_init.rb', self.host, poco_bof]
-                #if _os.system(' '.join(prog_cmd)):
-                #    raise RuntimeError('ERROR: Cannot initialize ADC.')
+                prog_cmd = ['adc16_init.rb', self.host, poco_bof]
+                if _os.system(' '.join(prog_cmd)):
+                    raise RuntimeError('ERROR: Cannot initialize ADC.')
         else:
             self.log('Bof process already running on FPGA.')
         if self.verbose:
@@ -877,10 +874,16 @@ class POCO(_katcp.FpgaClient):
             nums = [int(l[-12:-2], 16) for l in f.readlines()]
 
         # Enable the synth
-        self.write_int('adc16_use_synth', 1)
+        self.write_int('adc16_use_synth', (1 << 31) - 1)
 
         for i, n in enumerate(nums):
             self.write_int('lmx_ctrl', n, True)
+
+        # Right now, the only way I've been able to use the synth is to redirect
+        # the debugging output into the clock input. Setting this to 0 will
+        # still keep the synth running, but will use the sample clock. This
+        # needs to be changed if the synth works.
+        self.write_int('adc16_use_synth', 0)
 
     def uv_open(self):
         """

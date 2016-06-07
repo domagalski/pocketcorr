@@ -176,7 +176,7 @@ def tcp_recv_uv(tcpsocket, output_dir, bufsize):
         while len(filedata) != nbytes:
             filedata += tcpsocket.recv(bufsize)
             progress_len = total_bytes_read + len(filedata)
-            if progress_len - last_read > (1 << 20):
+            if progress_len - last_read > (1 << 20) or progress_len == uvsize:
                 print_progress(progress_len, uvsize)
                 last_read = progress_len
         tcpsocket.send('next')

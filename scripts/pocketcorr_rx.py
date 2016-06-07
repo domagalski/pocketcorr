@@ -35,6 +35,7 @@ ctrl_cmd_noargs = [
 
 ctrl_cmd_onearg = [
                    'bofstart',  # Start the bof process
+                   #'insel',     # Select the in
                    'data_dir',  # Set the data directory
                    'fft_shift', # Set the fft shifting stage
                   ]
@@ -51,7 +52,7 @@ class bcolors:
 
 CLIENT_PROMPT = bcolors.OKBLUE + 'poco> ' + bcolors.ENDC
 
-def collect_data(roach, args, manger=None):
+def collect_data(roach, args, manager=None):
     """
     Open a UV file and read data into it.
     """
