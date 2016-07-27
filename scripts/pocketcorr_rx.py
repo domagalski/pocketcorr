@@ -35,9 +35,9 @@ ctrl_cmd_noargs = [
 
 ctrl_cmd_onearg = [
                    'bofstart',  # Start the bof process
-                   #'insel',     # Select the in
                    'data_dir',  # Set the data directory
                    'fft_shift', # Set the fft shifting stage
+                   'insel',     # Select the input sources
                   ]
 
 class bcolors:
@@ -80,6 +80,7 @@ def ctrl_help():
     helpstr += '\n\tbofstart [force]    Start the bof process'
     helpstr += '\n\tdata_dir [dir]      View or set the save directory'
     helpstr += '\n\tfft_shift <shift>   Set the FFT shifting stages'
+    helpstr += '\n\tinsel <selector>    Select the input sources'
     helpstr += '\n\thelp                Show this help message'
     helpstr += '\n\treadout             Copy data from server to client'
     helpstr += '\n\tstatus              Get the correlator status'
@@ -305,7 +306,7 @@ def run_poco(args, connection=None, queue=None, manager=None):
     # Read the data into UV files.
     if args.server:
         rx_loop(roach, args, manager)
-        rx_cleanup(roach)
+        rx_cleanup(roach, args.keep_running)
     else:
         try:
             rx_loop(roach, args)
@@ -360,9 +361,9 @@ def rx_cmd(roach, args, manager):
                 manager['data_dir'] = roach.writedir
                 roach.socket.send((0, 'data_dir: new value set.'))
 
-    elif command[0] == 'fft_shift':
+    elif command[0] == 'fft_shift' or command[0] == 'insel':
         if len(command) == 1:
-            roach.socket.send((1, 'fft_shift: no value supplied.'))
+            roach.socket.send((1, 'no value supplied.'))
             return True
 
         if command[1][:2] == '0b':
@@ -374,12 +375,17 @@ def rx_cmd(roach, args, manager):
         try:
             shift = int(command[1], base)
         except ValueError:
-            roach.socket.send((1, 'fft_shift: invalid value.'))
+            roach.socket.send((1, command[0] + ': invalid value.'))
             return True
 
-        roach.log('Writing fft_shift: ' + bin(shift), True)
-        roach.fft_shift = shift
-        roach.write_int('fft_shift', shift)
+        roach.log('Writing ' + command[0] + ': ' + bin(shift), True)
+        if command[0] == 'fft_shift':
+            roach.fft_shift = shift
+            register = 'fft_shift'
+        if command[0] == 'insel':
+            roach.insel = shift
+            register = 'insel_insel_data'
+        roach.write_int(register, shift)
 
     elif command == 'kill-server':
         roach.log('Shutting down the control server.', True)
@@ -656,6 +662,5 @@ if __name__ == '__main__':
         poco.join()
         ctrl.join()
 
-        #run_poco(args, srv_pipe, srv_queue)
     else:
         run_poco(args)

@@ -1392,6 +1392,7 @@ def mode_int2list(mode):
     """
     list is [board, board version, demux, antennas]
     """
+    # TODO finish writing the comment on the next line
     # Bits per
     attr_bits = [5,3,3,5]
     bitpos = _np.r_[0, _np.cumsum(attr_bits[:-1])]

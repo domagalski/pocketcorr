@@ -20,7 +20,7 @@
 import sys
 import argparse
 import numpy as np
-import corr.katcp_wrapper as katcp
+import pocketcorr as pc
 from numpy import fft
 
 #BRAM_SIZE = 4 << 11
@@ -28,7 +28,7 @@ BRAM_SIZE = 4 << 10
 BRAM_WIDTH = 32
 NBITS = 8
 
-class ADC(katcp.FpgaClient):
+class ADC(pc.POCO):
     def adc_read(self, start_pol, demux=1, capture='adc'):
         """
         Read the time domain signals out of a BRAM.
@@ -45,17 +45,50 @@ class ADC(katcp.FpgaClient):
             pfb_read.imag = imag#map(twos_comp, imag)
             return pfb_read
         else:
+            read_size = BRAM_SIZE
             nbits = demux*NBITS
             npols = BRAM_WIDTH/nbits
             first = str(start_pol)
             last = str(start_pol + npols - 1)
             adc = capture + '_'*int(demux>1)
-            concat = self.read(adc + '_'.join([first, last]), BRAM_SIZE)
+
+            # I feel one day I'm going to look back on this and shake my head.
+            if self.poco == 'spoco12':
+                if adc == 'pfb':
+                    print 'ERROR: This is messed up on the FPGA.'
+                    sys.exit(1)
+                elif adc == 'fft':
+                    last = str(start_pol + 6)
+                    read_size *= 2
+                    npols /= 2
+                elif adc == 'eq':
+                    last = str(start_pol + 1)
+                    read_size *= 2
+                adc += '_cap_'
+
+                # There is a sync pulse somewhere in the data
+                if adc[:2] == 'eq' or adc[:3] == 'fft':
+                    sync = self.read(adc + 'sync', read_size).find(chr(1)) / 4
+            concat = self.read(adc + '_'.join([first, last]), read_size)
+
+            # Get the formatting for the data.
+            if adc[:3] != 'fft':
+                shape = (read_size/(npols*demux), npols*demux)
+                fmt = '>i1'
+            else:
+                shape = (read_size/(npols*demux*2), npols*demux)
+                fmt = '>i2'
 
             # Parse the data into usable values.
-            shape = (BRAM_SIZE/(npols*demux), npols*demux)
-            adc_read = np.fromstring(concat, '>i1').reshape(*shape)
+            adc_read = np.fromstring(concat, fmt).reshape(*shape)
+            if adc[:2] == 'eq' or adc[:3] == 'fft':
+                adc_read = adc_read[sync:sync+adc_read.shape[0]/2]
             adc_read = list(adc_read.transpose()[::-1])
+            if adc[:3] == 'fft':
+                adc_read = adc_read[0] + 1j*adc_read[1]
+                split = len(adc_read)/2
+                adc_read = [adc_read[:split], adc_read[split:]]
+
             if demux == 2:
                 adc_read = [np.r_[adc_read[2*i],adc_read[2*i+1]]
                         for i in range(len(adc_read)/2)]
@@ -65,7 +98,11 @@ class ADC(katcp.FpgaClient):
                     adc_read[i] = np.copy(reordered)
 
             # Return the data as a dictionary.
+            if capture == 'adc_cap':
+                capture = 'adc'
             names = [capture + str(i) for i in range(start_pol, start_pol+npols)]
+            if adc[:3] == 'fft':
+                names = [capture + str(i) for i in [start_pol, start_pol+6]]
             return zip(names, adc_read)
 
 def twos_comp(num32, nbits=18):
@@ -89,8 +126,8 @@ if __name__ == '__main__':
                         default=8,
                         type=int,
                         help='Number of antennas in the rpoco design.')
-    parser.add_argument('-c', '--capture', default='adc',
-                        help='Block to capture from (demux 2 only)')
+    parser.add_argument('-c', '--capture',
+                        help='Block to capture from (SNAP only)')
     parser.add_argument('-d', '--demux', default=1, type=int,
                         help='Demux mode of the ADC.')
     parser.add_argument('-o', '--output-file',
@@ -117,28 +154,48 @@ if __name__ == '__main__':
     poco = ADC(args.roach)
     poco.wait_connected()
 
-    if args.demux == 1:
-        cap = 'new_raw'
+    spoco12 = False
+    modelist = pc.mode_int2list(poco.read_int('ping'))
+    if modelist[0] == 'snap' and modelist[3] == 12:
+        spoco12 = True
+        poco.poco = 'spoco12'
+
+    if args.demux == 1 and args.capture is None:
+        if spoco12:
+            cap = 'adc'
+        else:
+            cap = 'new_raw'
     else:
         cap = args.capture
 
-    # Enable the ADC capture
-    poco.write_int(cap + '_capture_trig', 1)
+    if spoco12: # See the else for description of the sequence
+        poco.write_int(cap + '_cap_raw_trig', 1)
+        poco.write_int(cap + '_cap_raw', 1)
+        poco.write_int(cap + '_cap_raw', 0)
+        poco.write_int(cap + '_cap_raw_trig', 1)
+    else:
+        # Enable the ADC capture
+        poco.write_int(cap + '_capture_trig', 1)
 
-    # capture the ADC.
-    poco.write_int(cap + '_capture', 1)
-    poco.write_int(cap + '_capture', 0)
+        # capture the ADC.
+        poco.write_int(cap + '_capture', 1)
+        poco.write_int(cap + '_capture', 0)
 
-    # Turn off ADC capture.
-    poco.write_int(cap + '_capture_trig', 0)
+        # Turn off ADC capture.
+        poco.write_int(cap + '_capture_trig', 0)
 
     # Collect data and store it as a dictionary
     adc_capture = []
     nbits = args.demux * NBITS
-    if cap == 'pfb':
+    if cap == 'pfb' and not spoco12:
         pfb_capture = poco.adc_read(0, args.demux, cap)
     else:
-        for i in range(0, args.npol, BRAM_WIDTH/nbits):
+        npol = args.npol
+        step_size = BRAM_SIZE/nbits
+        if cap == 'eq' or cap == 'fft':
+            npol /= 2
+            step_size = 1
+        for i in range(0, npol, step_size):
             adc_capture += poco.adc_read(i, args.demux, cap)
         adc_capture = dict(adc_capture)
 
@@ -147,12 +204,12 @@ if __name__ == '__main__':
         np.savez(args.outfile, **adc_capture)
 
     # Set this for plotting
-    if args.demux == 1:
-        cap = 'adc'
+    #if args.demux == 1 and args.capture is None:
+    #    cap = 'adc'
 
     if args.antennas is not None:
         import matplotlib.pyplot as plt
-        if cap == 'pfb':
+        if cap == 'pfb' and not spoco12:
             plt.plot(np.abs(pfb_capture)**2)
         else:
             time_axis = np.arange(BRAM_SIZE*nbits/BRAM_WIDTH) * 1e6 / args.samp_rate
@@ -162,14 +219,20 @@ if __name__ == '__main__':
                 plt.figure()
                 name = cap + ant
                 sample = adc_capture[name]
-                if args.fft:
-                    pspec = np.abs(fft.fft(sample)[:len(sample)/2])**2
-                    pspec = 10*np.log10(pspec / np.max(pspec))
-                    plt.plot(freq_axis, pspec)
-                    plt.xlabel('Frequency (MHz)')
-                    plt.ylabel('Power (dB)')
+                if args.fft or cap == 'fft':
+                    if args.fft:
+                        pspec = np.abs(fft.fft(sample)[:len(sample)/2])**2
+                        pspec = 10*np.log10(pspec / np.max(pspec))
+                        plt.plot(freq_axis, pspec)
+                        plt.xlabel('Frequency (MHz)')
+                        plt.ylabel('Power (dB)')
+                    else:
+                        pspec = np.abs(sample)**2
+                        plt.plot(pspec)
+                        plt.xlabel('Frequency (chan)')
+                        plt.ylabel('Power')
                     plt.title(name)
-                    plt.axis([0, freq_axis[-1], np.min(pspec), 0])
+                    #plt.axis([0, freq_axis[-1], np.min(pspec), 0])
                 else:
                     plt.plot(time_axis, sample)
                     plt.xlabel('Time ($\mu s$)')
