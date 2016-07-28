@@ -228,12 +228,21 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--ip', dest='ip', required=True,
                         help='IP address of pocketcorr server')
+    parser.add_argument('-s', '--skip-date', action='store_true',
+                        help='Don\'t sync the system date on the server.')
 
     args = parser.parse_args()
 
     # Open a socket to send/receive data
     poco = POCOserver(socket.AF_INET, socket.SOCK_DGRAM)
     poco_addr = (args.ip, POCO_PORT)
+
+    # Set the date
+    if not is_localhost(args.ip) and not args.skip_date:
+        message = poco.exec_cmd('date ' + str(int(time.time())), poco_addr)
+        if message == 'error':
+            print 'ERROR: Cannot set system date on pocketcorr server.'
+            sys.exit(1)
 
     # Print a welcome message
     print '# POCKETCORR'

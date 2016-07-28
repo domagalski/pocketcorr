@@ -131,7 +131,15 @@ class POCO(_katcp.FpgaClient):
         not configured yet.
         """
         try:
-            return bool(self.read_int('ping')), self.read_int('acc_num') > 1
+            # Check that the FPGA is actually clocking
+            clk1 = self.read_int('sys_clkcounter')
+            _time.sleep(1e-4)
+            clk2 = self.read_int('sys_clkcounter')
+            if clk1 == clk2:
+                return False, False
+            else:
+                return bool(self.read_int('ping')), self.read_int('acc_num')>1
+
         except RuntimeError:
             return False, False
 
@@ -352,33 +360,7 @@ class POCO(_katcp.FpgaClient):
                 onboard syncronizer (True) or an external one (False).
         """
         # Set the eq_coeff parameter.
-        # 0-16 coeff, 17 coeff-en, 20-25 coeff-addr, 30-31 ant-pair-sel
-        if self.poco == 'snap12': # XXX impliment this system for all correlators.
-            size = self.antennas / 2
-            eq_coeff = int(self.eq_coeff) # Test to see if scalar
-            shape = (size, 2*self.nchan)
-            self.eq_coeff = eq_coeff * _np.ones(shape, dtype=_np.uint32)
-
-            # Set the eq_coeff parameter on the FPGA.
-            for i in range(size):
-                eq_name = '_'.join(['eq', str(2*i), str(2*i+1), 'coeffs'])
-                for j, coeff in enumerate(self.eq_coeff[i]):
-                    if self.verbose:
-                        message = 'POCO%d: ' % self.antennas
-                        message += eq_name + '[%d]: %d' % (j, coeff)
-                        self.log(message) # XXX sending mp in loop?
-                    self.write_int(eq_name, coeff, offset=j)
-        else:
-            for ant_sel in range(self.antennas/2):
-                for addr in range(EQ_ADDR_RANGE):
-                    if self.verbose:
-                        items = (ant_sel, addr, self.eq_coeff)
-                        message = 'POCO%d: ' % self.antennas
-                        message += 'ant_sel=%d, addr=%2d, eq_coeff=%d' % items
-                        self.log(message) # XXX
-                    eq_coeff  = (self.eq_coeff) + (1 << 17)
-                    eq_coeff += (addr << 20) + (ant_sel << 28)
-                    self.write_int('eq_coeff', eq_coeff)
+        self.set_eq_coeff(self.eq_coeff)
 
         # Sync selection
         # TODO completely remove the sync_sel register from all designs. This
@@ -586,6 +568,43 @@ class POCO(_katcp.FpgaClient):
         self.bandpass = bandpass
         self.samp_rate = samp_rate
         self.nyquist = nyquist_zone
+
+    def set_eq_coeff(self, eq_coeff):
+        """
+        This sets the eq coeff parameter on the correlator.
+
+        Input:
+
+        ``eq_coeff``: Equalization coefficient.
+        """
+        # Set the eq_coeff parameter.
+        # 0-16 coeff, 17 coeff-en, 20-25 coeff-addr, 30-31 ant-pair-sel
+        self.eq_coeff = eq_coeff
+        if self.poco == 'snap12': # XXX impliment this system for all correlators.
+            size = self.antennas / 2
+            shape = (size, 2*self.nchan)
+            self.eq_coeff = eq_coeff * _np.ones(shape, dtype=_np.uint32)
+
+            # Set the eq_coeff parameter on the FPGA.
+            for i in range(size):
+                eq_name = '_'.join(['eq', str(2*i), str(2*i+1), 'coeffs'])
+                for j, coeff in enumerate(self.eq_coeff[i]):
+                    if self.verbose:
+                        message = 'POCO%d: ' % self.antennas
+                        message += eq_name + '[%d]: %d' % (j, coeff)
+                        self.log(message) # XXX sending mp in loop?
+                    self.write_int(eq_name, coeff, offset=j)
+        else:
+            for ant_sel in range(self.antennas/2):
+                for addr in range(EQ_ADDR_RANGE):
+                    if self.verbose:
+                        items = (ant_sel, addr, self.eq_coeff)
+                        message = 'POCO%d: ' % self.antennas
+                        message += 'ant_sel=%d, addr=%2d, eq_coeff=%d' % items
+                        self.log(message) # XXX
+                    eq_coeff  = (self.eq_coeff) + (1 << 17)
+                    eq_coeff += (addr << 20) + (ant_sel << 28)
+                    self.write_int('eq_coeff', eq_coeff)
 
     def set_filename(self, filename):
         """

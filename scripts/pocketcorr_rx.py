@@ -36,6 +36,7 @@ ctrl_cmd_noargs = [
 ctrl_cmd_onearg = [
                    'bofstart',  # Start the bof process
                    'data_dir',  # Set the data directory
+                   'eq_coeff',  # Set the EQ coefficient
                    'fft_shift', # Set the fft shifting stage
                    'insel',     # Select the input sources
                   ]
@@ -79,6 +80,7 @@ def ctrl_help():
     helpstr += '\n\tbofkill             Kill the bof process'
     helpstr += '\n\tbofstart [force]    Start the bof process'
     helpstr += '\n\tdata_dir [dir]      View or set the save directory'
+    helpstr += '\n\teq_coeff <coeff>    Set the EQ coeff'
     helpstr += '\n\tfft_shift <shift>   Set the FFT shifting stages'
     helpstr += '\n\tinsel <selector>    Select the input sources'
     helpstr += '\n\thelp                Show this help message'
@@ -122,7 +124,7 @@ def ctrl_poco(lock, queue, pipe, manager):
         # Hitting enter while in netcat or ncat will bring up a prompt
         if not len(data):
             if netcat_shell:
-                messenger.sendto(netcat_prompt[2:], addr)
+                messenger.sendto(netcat_prompt[1:], addr)
             if not netcat_shell:
                 netcat_shell = True
                 pipe.send('status')
@@ -131,6 +133,21 @@ def ctrl_poco(lock, queue, pipe, manager):
                 message += '# To view commands, type ? or help.\n'
                 message += status + netcat_prompt
                 messenger.sendto(message, addr)
+            continue
+
+        # Set the data if logging in from a raspberry pi
+        if data[0] == 'date':
+            netcat_shell = False
+            # This requires the user running pocketcorr_rx.py to have root
+            # access so that the system time can be set. The format for the time
+            # is the number of seconds since the epoch.
+            if os.system('grep -q -i arm /proc/cpuinfo'):
+                messenger.sendto('ignore', addr)
+            else:
+                if os.system('sudo date -u -s @' + data[1]):
+                    messenger.sendto('error', addr)
+                else:
+                    messenger.sendto('success', addr)
             continue
 
         # Print help options
@@ -361,31 +378,39 @@ def rx_cmd(roach, args, manager):
                 manager['data_dir'] = roach.writedir
                 roach.socket.send((0, 'data_dir: new value set.'))
 
+    elif command[0] == 'eq_coeff':
+        if len(command) > 1:
+            try:
+                coeff = str2int(command[1])
+            except ValueError:
+                roach.socket.send((1, command[0] + ': invalid value.'))
+                return True
+            roach.set_eq_coeff(coeff)
+        roach.socket.send((0, 'eq_coeff: set to ' + str(roach.eq_coeff)))
+
     elif command[0] == 'fft_shift' or command[0] == 'insel':
-        if len(command) == 1:
-            roach.socket.send((1, 'no value supplied.'))
-            return True
+        if len(command) > 1:
+            try:
+                shift = str2int(command[1])
+            except ValueError:
+                roach.socket.send((1, command[0] + ': invalid value.'))
+                return True
 
-        if command[1][:2] == '0b':
-            base = 2
-        elif command[1][:2] == '0x':
-            base = 16
-        else:
-            base = 10
-        try:
-            shift = int(command[1], base)
-        except ValueError:
-            roach.socket.send((1, command[0] + ': invalid value.'))
-            return True
+            roach.log('Writing ' + command[0] + ': ' + bin(shift))
+            if command[0] == 'fft_shift':
+                roach.fft_shift = shift
+                register = 'ctrl_sw'
+            if command[0] == 'insel':
+                roach.insel = shift
+                register = 'insel_insel_data'
+            roach.write_int(register, shift)
 
-        roach.log('Writing ' + command[0] + ': ' + bin(shift), True)
+        msg = command[0] + ': set to '
         if command[0] == 'fft_shift':
-            roach.fft_shift = shift
-            register = 'fft_shift'
+            msg += bin(roach.fft_shift)
         if command[0] == 'insel':
-            roach.insel = shift
-            register = 'insel_insel_data'
-        roach.write_int(register, shift)
+            msg += bin(roach.insel)
+        roach.socket.send((0, msg))
 
     elif command == 'kill-server':
         roach.log('Shutting down the control server.', True)
@@ -483,6 +508,20 @@ def sendrecv(tcpsocket, message):
     """
     tcpsocket.send(message)
     return tcpsocket.recv(1024)
+
+def str2int(number):
+    """
+    Convert a number in string format to an int.
+    """
+    number = number.lower()
+    if number[:2] == '0b':
+        base = 2
+    elif number[:2] == '0x':
+        base = 16
+    else:
+        base = 10
+
+    return int(number, base)
 
 def tcp_send_uv(tcpsocket, filename):
     """
