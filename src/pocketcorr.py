@@ -858,29 +858,6 @@ class POCO(LMX2581):
         self.log('POCO%d: Closing UV file and renaming to %s.' % (ants, filename))
         _os.rename(self.tmp_file, filename)
 
-    def synth_codeloader(self, filename):
-        """
-        This function reads a file produced by Code Loader containing
-        values to write to the lmx_ctrl register.
-        """
-        # Read in the lines from the file and convert them to integers
-        # Assumptions: files have DOS line endings (made from Windows) and the
-        # last thing in each line is a hex string.
-        with open(filename) as f:
-            nums = [int(l[-12:-2], 16) for l in f.readlines()]
-
-        # Enable the synth
-        self.write_int('adc16_use_synth', (1 << 31) - 1)
-
-        for i, n in enumerate(nums):
-            self.write_int('lmx_ctrl', n, True)
-
-        # Right now, the only way I've been able to use the synth is to redirect
-        # the debugging output into the clock input. Setting this to 0 will
-        # still keep the synth running, but will use the sample clock. This
-        # needs to be changed if the synth works.
-        self.write_int('adc16_use_synth', 0)
-
     def uv_open(self):
         """
         This function opens a Miriad UV file for writing.
