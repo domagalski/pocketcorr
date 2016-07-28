@@ -24,7 +24,9 @@ Dependencies
 ---------------------------
 
 This software requires the modules [aipy](https://github.com/aaronparsons/aipy),
-[corr](https://github.com/ska-sa/corr), and whatever those modules depend on.
+[corr](https://github.com/ska-sa/corr),
+[SNAPsynth](https://github.com/domagalski/snap-synth),
+and whatever those modules depend on.
 The default calibration files can be found in the
 [capo](https://github.com/dannyjacobs/capo) repo, and the path to where the
 calibration files are located must be in your PYTHONPATH.

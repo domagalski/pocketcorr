@@ -24,7 +24,7 @@ import time         as _time
 import numpy        as _np
 import struct       as _struct
 import numpy.random as _npr
-from corr import katcp_wrapper as _katcp
+from SNAPsynth import LMX2581
 
 POCO_BOF8   = 'rpoco8_100.bof'
 POCO2_BOF8  = 'rpoco8_100_r2.bof'
@@ -46,7 +46,7 @@ UV_VAR_TYPES = {
     'ra':       'd', 'obsra':    'd', 'lst':      'd', 'pol':      'i',
 }
 
-class POCO(_katcp.FpgaClient):
+class POCO(LMX2581):
     """
     Class for communicating with a ROACH board running a pocket
     correlator.
@@ -58,7 +58,7 @@ class POCO(_katcp.FpgaClient):
         those of the corr.katcp.FpgaClient class.
         """
         # Open a connection to the ROACH and verify it.
-        _katcp.FpgaClient.__init__(self, *args, **kwargs)
+        LMX2581.__init__(self, *args, **kwargs)
 
         # Default values for ROACH model
         self.poco = None
@@ -575,7 +575,7 @@ class POCO(_katcp.FpgaClient):
 
         Input:
 
-        ``eq_coeff``: Equalization coefficient.
+        - ``eq_coeff``: Equalization coefficient.
         """
         # Set the eq_coeff parameter.
         # 0-16 coeff, 17 coeff-en, 20-25 coeff-addr, 30-31 ant-pair-sel
@@ -771,7 +771,7 @@ class POCO(_katcp.FpgaClient):
             self.limit = self.count + n_integ
 
     def start_bof(self, acc_len, eq_coeff, fft_shift, insel, force_restart,
-                  internal_synth=False, synth_file=None, synth_value=None):
+                  internal_synth=False, synth_value=None):
         """
         This function starts the bof file on the ROACH. This docstring
         only gives a brief overview of the parameters, and more
@@ -812,7 +812,8 @@ class POCO(_katcp.FpgaClient):
                 self.progdev(poco_bof)
             elif self.model == 2:
                 if self.poco == 'spoco12' and internal_synth:
-                    self.snap_synth(synth_file, synth_value)
+                    self.progdev(self.boffile)
+                    self.from_gen_synth(synth_value)
                 self.progdev('')
                 prog_cmd = ['adc16_init.rb', self.host, poco_bof]
                 if _os.system(' '.join(prog_cmd)):
@@ -840,30 +841,6 @@ class POCO(_katcp.FpgaClient):
 
         # Return whether the bof file was started or configured
         return prog_bof or configure
-
-    def snap_synth(self, synth_file=None, synth_value=None):
-        """
-        This function programs the synthesizer on SNAP boards. This
-        is to be done before programming the ADC.
-
-        Input:
-
-        - ``synth_file``: Hex file exported from CodeLoader.
-        - ``synth_value``: Synthesizer frequency in MHz.
-        """
-        # Simple value checking to make sure everything is chill.
-        if synth_file is not None and synth_value is not None:
-            raise ValueError('ERROR: Duplicate synth values given.')
-        if synth_file is None and synth_value is None:
-            raise ValueError('ERROR: No synth programming provided.')
-
-        # When the external synth gets programmed, it stays programmed
-        # even if the FPGA gets reprogrammed, or so I think...
-        self.progdev(self.boffile)
-        if synth_file is not None:
-            self.synth_codeloader(synth_file)
-        elif synth_value is not None:
-            raise RuntimeError('ERROR: Cannot set synth from arbitrary value.')
 
     def uv_close(self):
         """
@@ -1269,8 +1246,7 @@ class FakeROACH(POCO):
         return 0
 
     def start_bof(self, acc_len=1<<24, eq_coeff=16, fft_shift=0x3ff, insel=0,
-                 force_restart=None, internal_synth=False, synth_file=None,
-                 synth_value=None):
+                 force_restart=None, internal_synth=False, synth_value=None):
         """
         Set object variables in the POCO start_bof function.
         """

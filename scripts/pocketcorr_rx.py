@@ -490,14 +490,11 @@ def rx_setup_bof(roach, args):
     fft_shift     = args.fft_shift
     int_synth     = args.snap_synth
     samp_rate     = args.samp_rate
-    synth_file    = args.synth_file
     force_restart = args.force_restart
 
     acc_len = get_acclen(acc_len, acc_spec, int_time, samp_rate)
-    if int_synth and synth_file is not None:
-        samp_rate = None
     if roach.start_bof(acc_len, eq_coeff, fft_shift, insel, force_restart,
-                       int_synth, synth_file, samp_rate):
+                       int_synth, samp_rate):
         roach.poco_init()
     else:
         roach.poco_recall()
@@ -635,8 +632,6 @@ if __name__ == '__main__':
                         help='The ADC sample rate that is being used in MHz.')
     parser.add_argument('--snap-synth', action='store_true',
                         help='Use the onboard synth (SNAP boards only).')
-    parser.add_argument('--synth-file',
-                        help='Synth configuration file (SNAP boards only.')
     parser.add_argument('-s', '--fft-shift',
                         dest='fft_shift',
                         type=int,
