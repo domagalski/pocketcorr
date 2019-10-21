@@ -7,7 +7,7 @@ Documentation
 -------------
 
 Documentation for ``pocketcorr`` can be found here:
-https://www.astro.utoronto.ca/~domagalski/pocketcorr/
+https://galadriel.astro.utoronto.ca/~domagalski/pocketcorr/
 
 Installation
 ------------
